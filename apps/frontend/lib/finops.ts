@@ -1,7 +1,7 @@
 // 클라우드별 월 비용 추정. 서울 리전 공시가와 아래 가정으로 계산하며, 실제 청구액이나 측정값이 아닙니다.
 // 공시가의 출처와 확인일은 PRICE_SOURCES, PRICE_AS_OF 에 있습니다. 근거가 없는 값은 null("미제공")로 둡니다.
 
-export type TargetProvider = "gcp" | "azure";
+export type TargetProvider = "gcp" | "azure" | "aws";
 export type DbClass = "db.t3.micro" | "db.t3.small" | "db.t3.medium";
 export type DbBasis = "same_memory" | "as_deployed";
 export type CostVerdict = "COST_LOWER" | "COST_LOWER_CONDITIONAL" | "SIMILAR" | "COST_HIGHER";
@@ -125,7 +125,7 @@ export const VERDICT_LABEL: Record<CostVerdict, string> = {
   COST_HIGHER: "비용 불리",
 };
 
-const PRICED_REGION: Record<TargetProvider, string> = { gcp: "asia-northeast3", azure: "koreacentral" };
+const PRICED_REGION: Record<TargetProvider, string> = { gcp: "asia-northeast3", azure: "koreacentral", aws: "ap-northeast-2" };
 
 // ECS Fargate(Linux/x86), RDS Single-AZ, 인터넷 전송 첫 10TB 구간
 const AWS_SEOUL = {
@@ -259,6 +259,10 @@ interface ResolvedDb extends TargetDbFacts {
 }
 
 function resolveTargetDb({ targetProvider, dbClass, dbBasis, planDbTier }: FinOpsInputParams): ResolvedDb | null {
+  if (targetProvider === "aws") {
+    const { memoryLabel, memoryGb, cpuLabel, awsHour } = DB_CLASSES[dbClass];
+    return { name: dbClass, hour: awsHour, memoryLabel, memoryGb, cpuLabel, tierOrigin: "계획값" };
+  }
   const isGcp = targetProvider === "gcp";
   const sameMemoryName = isGcp ? DB_CLASSES[dbClass].gcpTier : DB_CLASSES[dbClass].azureSku;
   const deployedName = isGcp ? (planDbTier ?? TERRAFORM_DEFAULT_DB_TIER) : AZURE_DEFAULT_DB_SKU;
@@ -379,7 +383,12 @@ export function dbCondition({ basis, sourceDb, targetDb }: Pick<FinOpsComparison
 function compareOn(params: FinOpsInputParams, db: ResolvedDb): FinOpsComparisonResult {
   const load = loadOf(params);
   const source = awsProfile(params, load);
-  const target = params.targetProvider === "gcp" ? gcpProfile(params, load, db) : azureProfile(params, load, db);
+  const target =
+    params.targetProvider === "gcp"
+      ? gcpProfile(params, load, db)
+      : params.targetProvider === "azure"
+      ? azureProfile(params, load, db)
+      : awsProfile(params, load);
   const { memoryLabel, memoryGb, cpuLabel } = DB_CLASSES[params.dbClass];
   const facts = {
     basis: params.dbBasis,
@@ -543,6 +552,7 @@ export function buildCostReportText(input: CostReportInput): string {
 /** 가격표에 없는 목적지면 안내 문구를 돌려줍니다. provider 가 없으면 백엔드 기본값과 같이 gcp 로 봅니다. */
 export function unsupportedTargetMessage(provider: string | null | undefined, region: string | null | undefined): string | null {
   const name = provider ?? "gcp";
-  const isPriced = (name === "gcp" || name === "azure") && (!region || region === PRICED_REGION[name]);
+  const isPriced =
+    (name === "gcp" || name === "azure" || name === "aws") && (!region || region === PRICED_REGION[name as TargetProvider]);
   return isPriced ? null : `이 run 의 목적지(${name} ${region || NOT_PROVIDED})는 가격표에 없어 비용 추정을 표시하지 않습니다 (미제공).`;
 }

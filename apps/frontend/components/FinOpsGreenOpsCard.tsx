@@ -79,7 +79,12 @@ function useFinOpsInputs(run: RunStatus) {
   const memoryMb = sizing.memoryMb ?? FINOPS_DEFAULTS.memoryMb;
   const planDbTier = sizing.dbTier;
 
-  const initialProvider: TargetProvider = run.request.target_infra?.provider === "azure" ? "azure" : "gcp";
+  const initialProvider: TargetProvider =
+    run.request.target_infra?.provider === "azure"
+      ? "azure"
+      : run.request.target_infra?.provider === "aws"
+      ? "aws"
+      : "gcp";
   const [targetProvider, setTargetProvider] = useState<TargetProvider>(initialProvider);
   const [rps, setRps] = useState<number>(FINOPS_DEFAULTS.rps);
   const [idlePercent, setIdlePercent] = useState<number>(FINOPS_DEFAULTS.idlePercent);
@@ -238,6 +243,7 @@ function CardHeader({ report, setters }: { report: CostReportInput; setters: Inp
         <div className="inline-flex rounded-lg border border-ink/20 bg-paper p-0.5 text-xs font-mono">
           <ProviderButton label="GCP (Seoul)" isActive={targetProvider === "gcp"} onClick={() => setters.setTargetProvider("gcp")} />
           <ProviderButton label="Azure (Korea)" isActive={targetProvider === "azure"} onClick={() => setters.setTargetProvider("azure")} />
+          <ProviderButton label="AWS (Seoul)" isActive={targetProvider === "aws"} onClick={() => setters.setTargetProvider("aws")} />
         </div>
         <CopyReportButton input={report} />
       </div>
