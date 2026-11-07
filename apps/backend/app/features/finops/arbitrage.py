@@ -189,8 +189,8 @@ def calculate_arbitrage(
     reasons += decision.notes + egress.notes
     reasons.append("쓰기 트래픽(Write)은 데이터 정합성 보장을 위해 Active Master로 100% 펜싱됩니다.")
     reasons.append(
-        f"세션 일관성(Read-After-Write): 쓰기를 수행한 클라이언트는 {req.read_after_write_fence_sec:g}초간 "
-        f"마스터로 고정(Sticky)되어 쓰기 직후 읽기 복제 지연을 방지합니다."
+        "세션 일관성 한계: 쓰기 후 읽기 세션 고정(Read-After-Write Sticky) 미구현 상태이므로, "
+        "방금 쓴 데이터가 복제 지연 시간 동안 일시적으로 이전 값으로 조회될 수 있습니다."
     )
     fx_rate, fx_notes = _fx(req)
     reasons += fx_notes
