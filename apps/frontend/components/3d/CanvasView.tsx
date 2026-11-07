@@ -14,6 +14,7 @@ interface Props {
   isQuarantined?: boolean;
   riskScore?: number;
   onReroute?: () => void;
+  showFullTopology?: boolean;
 }
 
 export default function CanvasView({
@@ -26,6 +27,7 @@ export default function CanvasView({
   isQuarantined,
   riskScore,
   onReroute,
+  showFullTopology,
 }: Props) {
   return (
     <Canvas
@@ -44,6 +46,7 @@ export default function CanvasView({
         isQuarantined={isQuarantined}
         riskScore={riskScore}
         onReroute={onReroute}
+        showFullTopology={showFullTopology}
       />
     </Canvas>
   );

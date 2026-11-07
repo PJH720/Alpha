@@ -26,6 +26,7 @@ export function DynamicCanvas({ run, onNavigateSection }: Props) {
   const [selectedNode, setSelectedNode] = useState<"source" | "cdc" | "target" | null>(null);
   const [isCompromised, setIsCompromised] = useState(false);
   const [isQuarantined, setIsQuarantined] = useState(false);
+  const [showFullTopology, setShowFullTopology] = useState(false);
   const [rerouteNotice, setRerouteNotice] = useState<string | null>(null);
   const controlsRef = useRef<OrbitControlsHandle | null>(null);
 
@@ -142,6 +143,18 @@ export function DynamicCanvas({ run, onNavigateSection }: Props) {
                 >
                   {isCompromised ? "🚨 GuardDuty 침해 활성" : "🛡️ 보안 위협 테스트"}
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setShowFullTopology((prev) => !prev)}
+                  className={`rounded border px-2 py-0.5 font-mono text-[11px] transition-all active:scale-[0.96] ${
+                    showFullTopology
+                      ? "border-sky-700 bg-sky-700 text-white shadow-xs"
+                      : "border-ink/20 bg-paper text-ink/75 hover:border-sky-600 hover:text-sky-700"
+                  }`}
+                  title="AWS · GCP · Azure · On-Prem 4대 인프라 및 Cloudflare 에지 라우팅 전체 조감도"
+                >
+                  {showFullTopology ? "🌐 4대 클라우드 켜짐" : "🌐 4대 클라우드 전체"}
+                </button>
               </div>
             </>
           )}
@@ -189,6 +202,7 @@ export function DynamicCanvas({ run, onNavigateSection }: Props) {
             isQuarantined={isQuarantined}
             riskScore={isCompromised ? 0.85 : 0.0}
             onReroute={handleReroute}
+            showFullTopology={showFullTopology}
           />
 
           {/* 하단 실측 데이터 요약 바 */}

@@ -5,6 +5,7 @@ import { useEffect, useRef, type ComponentRef } from "react";
 import * as THREE from "three";
 import type { RunStatus } from "@/lib/workflows";
 import { CdcPipelineArc } from "./CdcPipelineArc";
+import { MultiCloudTopologyNodes } from "./MultiCloudTopologyNodes";
 import { SourceTargetNodes } from "./SourceTargetNodes";
 
 export type OrbitControlsHandle = ComponentRef<typeof OrbitControls>;
@@ -19,6 +20,7 @@ interface Props {
   isQuarantined?: boolean;
   riskScore?: number;
   onReroute?: () => void;
+  showFullTopology?: boolean;
 }
 
 function FocusController({
@@ -59,6 +61,7 @@ export function CloudMorphScene({
   isQuarantined,
   riskScore,
   onReroute,
+  showFullTopology,
 }: Props) {
   const localControlsRef = useRef<OrbitControlsHandle | null>(null);
   const sourceRef = useRef<THREE.Group | null>(null);
@@ -144,6 +147,7 @@ export function CloudMorphScene({
             onSelectNode={onSelectNode}
             onNavigateSection={onNavigateSection}
           />
+          <MultiCloudTopologyNodes showFullTopology={Boolean(showFullTopology)} />
         </group>
       </Bounds>
     </>
