@@ -645,6 +645,10 @@ def run_db_migration(
         "target": dict(target),
     }
 
+    if os.getenv("CDC_USE_EXISTING_VPN", "0") in ("1", "true", "True"):
+        # 팀이 미리 띄운 VPN 으로 원본·대상이 이미 닿을 때. probe 가 실패하면 바로 멈춥니다.
+        inp["options"] = {"skip_vpn": True}
+
     if _agent_is_simulated():
         # 모의 에이전트로 실제 VPN 을 만들지 않습니다. 화면에는 simulated 지표로 구분됩니다.
         inp["options"] = {"skip_vpn": True}
