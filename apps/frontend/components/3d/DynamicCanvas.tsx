@@ -51,7 +51,7 @@ export function DynamicCanvas({ run, onNavigateSection }: Props) {
 
   const handleReroute = async () => {
     try {
-      const res = await fetch("http://127.0.0.1:8000/security/reroute", {
+      const res = await fetch("/api/security/reroute", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
