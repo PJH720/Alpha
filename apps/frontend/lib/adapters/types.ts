@@ -16,22 +16,31 @@ export interface TargetInfraAdapter {
   label: string;
   cloudName: string;
   defaultRegion: string;
+  projectIdLabel: string;
+  projectIdPlaceholder: string;
+  projectIdHint: string;
   // backend `target_adapters.TARGET_ADAPTERS` 에 등록된 클라우드만 true 입니다. 등록 전에는 API 도 거절합니다.
   isAvailable: boolean;
   toConfig: (region: string, projectId?: string | null) => TargetInfraConfig;
 }
 
-const toConfigFor = (provider: TargetInfraType) => (region: string, projectId?: string | null) => ({
-  provider,
-  region,
-  ...(projectId ? { project_id: projectId } : {}),
-});
+const toConfigFor =
+  (provider: TargetInfraType) =>
+  (region: string, projectId?: string | null): TargetInfraConfig => {
+    const trimmed = projectId?.trim();
+    return trimmed ? { provider, region, project_id: trimmed } : { provider, region };
+  };
+
+const DEFAULT_PROJECT_ID_HINT = "비워둘 시 백엔드 기본 환경변수를 사용합니다.";
 
 export const GcpTargetAdapter: TargetInfraAdapter = {
   provider: "gcp",
   label: "GCP Asia-Northeast3 (Cloud Run + Cloud SQL)",
   cloudName: "GCP",
   defaultRegion: "asia-northeast3",
+  projectIdLabel: "목적지 프로젝트 ID (선택)",
+  projectIdPlaceholder: "alpha-target-513617",
+  projectIdHint: DEFAULT_PROJECT_ID_HINT,
   isAvailable: true,
   toConfig: toConfigFor("gcp"),
 };
@@ -41,6 +50,9 @@ export const AzureTargetAdapter: TargetInfraAdapter = {
   label: "Azure Korea Central (Container Apps + Flexible Server)",
   cloudName: "Azure",
   defaultRegion: "koreacentral",
+  projectIdLabel: "목적지 구독 ID (선택)",
+  projectIdPlaceholder: "00000000-0000-0000-0000-000000000000",
+  projectIdHint: DEFAULT_PROJECT_ID_HINT,
   isAvailable: true,
   toConfig: toConfigFor("azure"),
 };
@@ -50,7 +62,11 @@ export const AwsTargetAdapter: TargetInfraAdapter = {
   label: "AWS Asia Pacific (Seoul) (ECS Fargate + RDS)",
   cloudName: "AWS",
   defaultRegion: "ap-northeast-2",
-  isAvailable: false, // 백엔드 AWS 테라폼 PR 머지 전까지 비활성화 유지
+  projectIdLabel: "목적지 계정 ID (선택)",
+  projectIdPlaceholder: "12자리 숫자 (예: 123456789012)",
+  projectIdHint:
+    "비워둘 시 백엔드 환경변수를 사용하며, 값과 환경변수가 모두 없으면 시작 전 오류('AWS 계정 ID가 없습니다')로 중단됩니다.",
+  isAvailable: false,
   toConfig: toConfigFor("aws"),
 };
 
@@ -59,6 +75,9 @@ export const NcpTargetAdapter: TargetInfraAdapter = {
   label: "NCP (Naver Cloud Platform)",
   cloudName: "NCP",
   defaultRegion: "KR",
+  projectIdLabel: "목적지 프로젝트 ID (선택)",
+  projectIdPlaceholder: "ncp-project",
+  projectIdHint: DEFAULT_PROJECT_ID_HINT,
   isAvailable: false,
   toConfig: toConfigFor("ncp"),
 };

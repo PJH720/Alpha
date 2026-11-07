@@ -79,12 +79,9 @@ function useFinOpsInputs(run: RunStatus) {
   const memoryMb = sizing.memoryMb ?? FINOPS_DEFAULTS.memoryMb;
   const planDbTier = sizing.dbTier;
 
+  const reqProvider = run.request.target_infra?.provider;
   const initialProvider: TargetProvider =
-    run.request.target_infra?.provider === "azure"
-      ? "azure"
-      : run.request.target_infra?.provider === "aws"
-      ? "aws"
-      : "gcp";
+    reqProvider === "azure" ? "azure" : reqProvider === "aws" ? "aws" : "gcp";
   const [targetProvider, setTargetProvider] = useState<TargetProvider>(initialProvider);
   const [rps, setRps] = useState<number>(FINOPS_DEFAULTS.rps);
   const [idlePercent, setIdlePercent] = useState<number>(FINOPS_DEFAULTS.idlePercent);
@@ -431,6 +428,9 @@ function FinOpsCardBody({ run }: Props) {
       </p>
       <HeroStats metrics={metrics} params={params} />
       <DbBasisRows bases={bases} planDbTier={params.planDbTier} />
+      {params.targetProvider === "aws" && (
+        <p className="mt-2 text-xs text-ink/70">AWS 목적지는 ECS Fargate + RDS 공시가 기준으로 비교합니다.</p>
+      )}
 
       <div className="mt-5 grid gap-4 md:grid-cols-2">
         <CostPanel title={`[현재] AWS ${metrics.source.regionName}`} profile={metrics.source} />
