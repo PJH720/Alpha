@@ -216,74 +216,138 @@ class SecurityGovernanceService:
     def execute_reroute(self, request: RerouteRequest) -> RerouteResponse:
         start_ts = time.perf_counter()
 
-        # 노드 격리 상태 업데이트
-        if request.quarantine:
-            self._quarantined_nodes.add(request.compromised_node_id)
+        from fastapi import HTTPException
+        from app.features.provisioning.worker_client import WorkerClient
 
-        cloudflare_synced = False
-        sync_mode = "시뮬레이션 (Worker 미설정)"
+        # 1. 대상 타깃 검증 (Juho 리뷰 반영: 격리 전 target 설정 여부 확인)
+        if not request.target_reroute_id or not request.target_reroute_id.strip():
+            raise HTTPException(status_code=400, detail="reroute_target_required: target_reroute_id must be provided")
 
+        worker = None
         try:
-            from app.features.provisioning.worker_client import WorkerClient
-
             worker = WorkerClient.from_env()
-            if worker is not None:
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Worker configuration error: {exc}") from None
+
+        if worker is not None:
+            # Worker 가 설정되어 있는 경우: Worker 동기화를 먼저 호출하고 실패 시 502 및 상태 롤백
+            candidate_isolated = set(self._quarantined_nodes)
+            if request.quarantine:
+                candidate_isolated.add(request.compromised_node_id)
+            else:
+                candidate_isolated.discard(request.compromised_node_id)
+
+            try:
                 worker.set_quarantine(
-                    isolated_nodes=list(self._quarantined_nodes),
+                    isolated_nodes=list(candidate_isolated),
                     reroute_target=request.target_reroute_id,
                 )
-                cloudflare_synced = True
-                sync_mode = "Cloudflare Worker 에지 동기화 완료"
-        except Exception as exc:
-            sync_mode = f"Cloudflare Worker 동기화 실패 ({exc})"
+            except Exception as exc:
+                # Worker 호출 실패 시: 로컬 격리 상태를 변경하지 않고 502 Bad Gateway 반환
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Worker quarantine sync failed: {exc}",
+                ) from None
+
+            # Worker 동기화 성공 시에만 로컬 격리 목록 반영
+            if request.quarantine:
+                self._quarantined_nodes.add(request.compromised_node_id)
+            else:
+                self._quarantined_nodes.discard(request.compromised_node_id)
+
+            elapsed_ms = round((time.perf_counter() - start_ts) * 1000, 2)
+            return RerouteResponse(
+                status="rerouted",
+                quarantined_node_id=request.compromised_node_id,
+                active_target_id=request.target_reroute_id,
+                reroute_latency_ms=elapsed_ms,
+                message=(
+                    f"보안 위험 노드 [{request.compromised_node_id}] 가 격리되었습니다. "
+                    f"트래픽이 [{request.target_reroute_id}] 으로 우회되었습니다 "
+                    f"(Cloudflare Worker 에지 동기화 완료, 처리 시간: {elapsed_ms}ms)."
+                ),
+                cloudflare_synced=True,
+            )
+
+        # Worker 미설정 (시뮬레이션/데모 모드):
+        # cloudflare_synced=False 로 두고 메시지에서 "우회되었습니다"는 제외
+        if request.quarantine:
+            self._quarantined_nodes.add(request.compromised_node_id)
+        else:
+            self._quarantined_nodes.discard(request.compromised_node_id)
 
         elapsed_ms = round((time.perf_counter() - start_ts) * 1000, 2)
-
         return RerouteResponse(
-            status="rerouted",
+            status="quarantined",
             quarantined_node_id=request.compromised_node_id,
             active_target_id=request.target_reroute_id,
             reroute_latency_ms=elapsed_ms,
             message=(
-                f"보안 위험 노드 [{request.compromised_node_id}] 가 격리되었습니다. "
-                f"트래픽이 [{request.target_reroute_id}] 으로 우회되었습니다 ({sync_mode}, 처리 시간: {elapsed_ms}ms)."
+                f"보안 위험 노드 [{request.compromised_node_id}] 격리 시뮬레이션 완료 "
+                f"(Worker 미설정, 데모 모드, 처리 시간: {elapsed_ms}ms)."
             ),
-            cloudflare_synced=cloudflare_synced,
+            cloudflare_synced=False,
         )
 
     def release_quarantine(self, node_id: str | None = None) -> RerouteResponse:
         start_ts = time.perf_counter()
 
+        from fastapi import HTTPException
+        from app.features.provisioning.worker_client import WorkerClient
+
+        target_name = node_id or "전체 노드"
+
+        worker = None
+        try:
+            worker = WorkerClient.from_env()
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Worker configuration error: {exc}") from None
+
+        if worker is not None:
+            candidate_isolated = set(self._quarantined_nodes)
+            if node_id:
+                candidate_isolated.discard(node_id)
+            else:
+                candidate_isolated.clear()
+
+            try:
+                worker.set_quarantine(
+                    isolated_nodes=list(candidate_isolated),
+                    reroute_target=None if not candidate_isolated else "gcp-cloud-run",
+                )
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Worker quarantine release failed: {exc}",
+                ) from None
+
+            if node_id:
+                self._quarantined_nodes.discard(node_id)
+            else:
+                self._quarantined_nodes.clear()
+
+            elapsed_ms = round((time.perf_counter() - start_ts) * 1000, 2)
+            return RerouteResponse(
+                status="released",
+                quarantined_node_id=target_name,
+                active_target_id="aws-ecs-workitems",
+                reroute_latency_ms=elapsed_ms,
+                message=f"[{target_name}] 격리 해제 완료 (Cloudflare Worker 에지 동기화 완료, 처리 시간: {elapsed_ms}ms).",
+                cloudflare_synced=True,
+            )
+
+        # Worker 미설정 (시뮬레이션 모드)
         if node_id:
             self._quarantined_nodes.discard(node_id)
         else:
             self._quarantined_nodes.clear()
 
-        cloudflare_synced = False
-        sync_mode = "시뮬레이션 (Worker 미설정)"
-
-        try:
-            from app.features.provisioning.worker_client import WorkerClient
-
-            worker = WorkerClient.from_env()
-            if worker is not None:
-                worker.set_quarantine(
-                    isolated_nodes=list(self._quarantined_nodes),
-                    reroute_target=None if not self._quarantined_nodes else "gcp-cloud-run",
-                )
-                cloudflare_synced = True
-                sync_mode = "Cloudflare Worker 에지 동기화 완료"
-        except Exception as exc:
-            sync_mode = f"Cloudflare Worker 동기화 실패 ({exc})"
-
         elapsed_ms = round((time.perf_counter() - start_ts) * 1000, 2)
-        target_name = node_id or "전체 노드"
-
         return RerouteResponse(
             status="released",
             quarantined_node_id=target_name,
             active_target_id="aws-ecs-workitems",
             reroute_latency_ms=elapsed_ms,
-            message=f"[{target_name}] 격리 해제 완료 ({sync_mode}, 처리 시간: {elapsed_ms}ms).",
-            cloudflare_synced=cloudflare_synced,
+            message=f"[{target_name}] 격리 해제 시뮬레이션 완료 (Worker 미설정, 처리 시간: {elapsed_ms}ms).",
+            cloudflare_synced=False,
         )

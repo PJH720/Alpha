@@ -142,9 +142,11 @@ export default {
       // TARGET 이면 제어 명령으로 정한 주소(target)를 먼저 쓰고, 없으면 설정값 UPSTREAM_TARGET 을 쓴다
       let base = origin === "TARGET" ? target || env.UPSTREAM_TARGET : env.UPSTREAM_SOURCE;
 
-      // [안전 방어]: 격리 우회 중인데 TARGET 주소가 미설정된 경우 500 에러 대신 안전하게 SOURCE 로 폴백
+      // [Juho 리뷰 반영]: 격리 중인데 TARGET 주소가 미설정된 경우 원본(SOURCE)으로 폴백하여
+      // 침해된 인스턴스에서 응답하고 가짜 X-Quarantine: true 헤더를 달지 않고,
+      // 정직하게 503 Service Unavailable 로 요청을 거절합니다.
       if (!base && viaQuarantine) {
-        base = env.UPSTREAM_SOURCE;
+        return error(503, "quarantine target unconfigured: destination target is required to safely reroute traffic");
       }
       if (!base) return error(500, `upstream for ${origin} is not configured`);
 

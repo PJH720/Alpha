@@ -109,7 +109,51 @@ def test_reroute_simulation_when_worker_not_configured(monkeypatch):
     assert resp.status_code == 200
     body = resp.json()
     assert body["cloudflare_synced"] is False
+    assert body["status"] == "quarantined"
     assert "시뮬레이션" in body["message"]
+    # Juho 리뷰 반영: Worker 미설정 시뮬레이션에서는 "우회되었습니다" 문구를 노출하지 않음
+    assert "우회되었습니다" not in body["message"]
+
+
+def test_reroute_requires_target():
+    client = TestClient(app)
+    resp = client.post(
+        "/security/reroute",
+        json={
+            "compromised_node_id": "aws-ecs-workitems",
+            "target_reroute_id": "",
+            "quarantine": True,
+        },
+    )
+    assert resp.status_code == 400
+    assert "reroute_target_required" in resp.json()["detail"]
+
+
+def test_reroute_worker_sync_failure_returns_502_and_rolls_back(monkeypatch):
+    from app.features.provisioning.worker_client import WorkerClient
+    from app.features.provisioning.terraform import ProvisioningError
+    from app.features.security.router import get_security_service
+
+    class FailingWorker:
+        def set_quarantine(self, isolated_nodes, reroute_target):
+            raise ProvisioningError("Worker endpoint connection timeout")
+
+    monkeypatch.setattr(WorkerClient, "from_env", lambda: FailingWorker())
+    client = TestClient(app)
+    resp = client.post(
+        "/security/reroute",
+        json={
+            "compromised_node_id": "node-fail-test",
+            "target_reroute_id": "gcp-cloud-run",
+            "quarantine": True,
+        },
+    )
+    assert resp.status_code == 502
+    assert "Worker quarantine sync failed" in resp.json()["detail"]
+
+    # 롤백 확인: 실패한 노드가 로컬 격리 목록에 추가되지 않음
+    service = get_security_service()
+    assert "node-fail-test" not in service._quarantined_nodes
 
 
 def test_release_quarantine(monkeypatch):
@@ -131,3 +175,18 @@ def test_release_quarantine(monkeypatch):
     assert body["cloudflare_synced"] is True
     assert len(calls) == 1
     assert calls[0][0] == []
+
+
+def test_release_quarantine_worker_failure_returns_502(monkeypatch):
+    from app.features.provisioning.worker_client import WorkerClient
+    from app.features.provisioning.terraform import ProvisioningError
+
+    class FailingWorker:
+        def set_quarantine(self, isolated_nodes, reroute_target):
+            raise ProvisioningError("Worker release failed")
+
+    monkeypatch.setattr(WorkerClient, "from_env", lambda: FailingWorker())
+    client = TestClient(app)
+    resp = client.post("/security/release", json={"node_id": "aws-ecs-workitems"})
+    assert resp.status_code == 502
+    assert "Worker quarantine release failed" in resp.json()["detail"]

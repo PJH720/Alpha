@@ -95,7 +95,8 @@ export function DynamicCanvas({ run, onNavigateSection }: Props) {
       if (res.ok) {
         const data = await res.json();
         setIsQuarantined(true);
-        setRerouteNotice(`Cloudflare 에지: ${data.message}`);
+        const prefix = data.cloudflare_synced ? "Cloudflare 에지: " : "데모 시뮬레이션: ";
+        setRerouteNotice(`${prefix}${data.message}`);
       } else {
         const errData = await res.json().catch(() => null);
         const errDetail = errData?.detail || `HTTP ${res.status}`;
@@ -126,7 +127,8 @@ export function DynamicCanvas({ run, onNavigateSection }: Props) {
       if (res.ok) {
         const data = await res.json();
         setIsQuarantined(false);
-        setRerouteNotice(`격리 해제: ${data.message}`);
+        const prefix = data.cloudflare_synced ? "Cloudflare 에지: " : "데모 시뮬레이션: ";
+        setRerouteNotice(`${prefix}${data.message}`);
       } else {
         const errData = await res.json().catch(() => null);
         setRerouteNotice(`⚠️ 해제 실패: ${errData?.detail || `HTTP ${res.status}`}`);

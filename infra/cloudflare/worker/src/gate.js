@@ -122,6 +122,8 @@ export class Gate extends DurableObject {
 
     // 보안 침해 격리(Quarantine) 라우팅:
     // SOURCE 모드이고 격리 명단에 유효한 노드가 등록되어 있을 때
+    // 참고: 현재 게이트 아키텍처에서 노드 격리는 해당 워크로드 원본(SOURCE) 전체에 대한
+    // 안전 격리(쓰기 503 차단 및 TARGET 읽기 우회)로 동작합니다.
     const q = this.state.quarantine;
     const cleanNodes = Array.isArray(q?.isolated_nodes)
       ? q.isolated_nodes.filter((n) => typeof n === "string" && n.trim().length > 0).map((n) => n.trim())
@@ -182,11 +184,16 @@ export class Gate extends DurableObject {
 
     const ticket = ++this.seq;
     this.tickets.set(ticket, { origin, startedAt: Date.now() });
-    // target: 제어 명령으로 정한 GCP 쪽 주소 (없으면 null). 예전에 저장된 상태에는 이 칸이 없어서 ?? 로 맞춘다
+    // target: 제어 명령으로 정한 GCP 쪽 주소 (없으면 null).
+    // 격리 우회 시 reroute_target 이 올바른 URL 프로토콜(http/https)이면 우선 사용합니다.
+    const effectiveTarget = (viaQuarantine && this.state.quarantine?.reroute_target && (this.state.quarantine.reroute_target.startsWith("http://") || this.state.quarantine.reroute_target.startsWith("https://")))
+      ? this.state.quarantine.reroute_target
+      : (this.state.target_url ?? null);
+
     return {
       origin,
       ticket,
-      target: this.state.target_url ?? null,
+      target: effectiveTarget,
       viaArbitrage,
       viaQuarantine,
       isBlocked: false,
