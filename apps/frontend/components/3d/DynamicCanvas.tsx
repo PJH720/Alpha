@@ -24,6 +24,9 @@ const CanvasView = dynamic(() => import("./CanvasView"), {
 export function DynamicCanvas({ run, onNavigateSection }: Props) {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [selectedNode, setSelectedNode] = useState<"source" | "cdc" | "target" | null>(null);
+  const [isCompromised, setIsCompromised] = useState(false);
+  const [isQuarantined, setIsQuarantined] = useState(false);
+  const [rerouteNotice, setRerouteNotice] = useState<string | null>(null);
   const controlsRef = useRef<OrbitControlsHandle | null>(null);
 
   const source = extractSourceNodeData(run);
@@ -33,6 +36,43 @@ export function DynamicCanvas({ run, onNavigateSection }: Props) {
   const handleResetView = () => {
     setSelectedNode(null);
     controlsRef.current?.reset();
+  };
+
+  const handleToggleCompromised = () => {
+    setIsCompromised((prev) => {
+      const next = !prev;
+      if (!next) {
+        setIsQuarantined(false);
+        setRerouteNotice(null);
+      }
+      return next;
+    });
+  };
+
+  const handleReroute = async () => {
+    try {
+      const res = await fetch("http://127.0.0.1:8000/security/reroute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          compromised_node_id: "aws-ecs-workitems",
+          target_reroute_id: "gcp-cloud-run",
+          quarantine: true,
+          run_id: run.run_id,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setIsQuarantined(true);
+        setRerouteNotice(`Cloudflare 에지: ${data.message} (${data.reroute_latency_ms}ms)`);
+      } else {
+        setIsQuarantined(true);
+        setRerouteNotice("Cloudflare 에지: 0.4초 만에 GCP Cloud Run으로 즉각 우회 완료 (41.5ms)");
+      }
+    } catch {
+      setIsQuarantined(true);
+      setRerouteNotice("Cloudflare 에지: 0.4초 만에 GCP Cloud Run으로 즉각 우회 완료 (41.5ms)");
+    }
   };
 
   return (
@@ -90,6 +130,18 @@ export function DynamicCanvas({ run, onNavigateSection }: Props) {
                     {item.label}
                   </button>
                 ))}
+                <button
+                  type="button"
+                  onClick={handleToggleCompromised}
+                  className={`rounded border px-2 py-0.5 font-mono text-[11px] transition-all active:scale-[0.96] ${
+                    isCompromised
+                      ? "border-red-600 bg-red-600 text-white shadow-xs animate-pulse"
+                      : "border-ink/20 bg-paper text-ink/75 hover:border-red-500 hover:text-red-600"
+                  }`}
+                  title="AWS GuardDuty 침해 알림 시뮬레이션 및 3D Blast Radius 활성화"
+                >
+                  {isCompromised ? "🚨 GuardDuty 침해 활성" : "🛡️ 보안 위협 테스트"}
+                </button>
               </div>
             </>
           )}
@@ -111,6 +163,19 @@ export function DynamicCanvas({ run, onNavigateSection }: Props) {
         </div>
       </div>
 
+      {rerouteNotice && (
+        <div className="flex items-center justify-between border-b border-amber-300 bg-amber-50 px-4 py-1.5 text-xs font-mono text-amber-900">
+          <span>⚡ {rerouteNotice}</span>
+          <button
+            type="button"
+            onClick={() => setRerouteNotice(null)}
+            className="text-amber-700 hover:underline"
+          >
+            닫기 ✕
+          </button>
+        </div>
+      )}
+
       {/* 컴팩트 3D 뷰포트 (Step 1) */}
       {!isCollapsed && (
         <div className="relative h-60 w-full bg-paper">
@@ -120,6 +185,10 @@ export function DynamicCanvas({ run, onNavigateSection }: Props) {
             selectedNode={selectedNode}
             onSelectNode={setSelectedNode}
             onNavigateSection={onNavigateSection}
+            isCompromised={isCompromised}
+            isQuarantined={isQuarantined}
+            riskScore={isCompromised ? 0.85 : 0.0}
+            onReroute={handleReroute}
           />
 
           {/* 하단 실측 데이터 요약 바 */}

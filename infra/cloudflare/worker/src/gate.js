@@ -24,6 +24,11 @@ const initialState = () => ({
     current_lag_bytes: 0,
     lag_updated_at: null,
   },
+  quarantine: {
+    isolated_nodes: [],
+    reroute_target: null,
+    quarantined_at: null,
+  },
 });
 
 // 요청 집계. 저장하지 않으므로 객체가 다시 뜨면 since 가 새 시각이 되어 호출 쪽이 알아챌 수 있다.
@@ -105,29 +110,37 @@ export class Gate extends DurableObject {
 
     let origin = this.state.mode;
     let viaArbitrage = false;
+    let viaQuarantine = false;
 
-    // 차익거래 라우팅: 모드가 SOURCE일 때, 쓰기가 아닌 읽기 요청이고
-    // 복제 지연이 허용 임계치 이내이면 Cloud Run(TARGET)으로 가중치 기반 라우팅
-    const arb = this.state.arbitrage;
-    if (this.state.mode === "SOURCE" && arb?.enabled && !isWrite) {
-      // 복제 지연 세이프가드: 제어 평면(CDC)의 측정 지연과 클라이언트 헤더 중 보수적인(큰) 값 선택
-      const controlLag = arb.current_lag_bytes ?? null;
-      const clientLag = lagBytes !== null && !isNaN(lagBytes) ? lagBytes : null;
-      const effectiveLag = clientLag !== null && controlLag !== null ? Math.max(controlLag, clientLag) : controlLag;
-      const maxLag = arb.max_lag_bytes ?? 1024;
+    // 보안 침해 격리(Quarantine) 라우팅: SOURCE 노드가 격리 명단에 있으면 즉시 TARGET으로 우회
+    const q = this.state.quarantine;
+    if (this.state.mode === "SOURCE" && q?.isolated_nodes?.length > 0) {
+      origin = "TARGET";
+      viaQuarantine = true;
+    } else {
+      // 차익거래 라우팅: 모드가 SOURCE일 때, 쓰기가 아닌 읽기 요청이고
+      // 복제 지연이 허용 임계치 이내이면 Cloud Run(TARGET)으로 가중치 기반 라우팅
+      const arb = this.state.arbitrage;
+      if (this.state.mode === "SOURCE" && arb?.enabled && !isWrite) {
+        // 복제 지연 세이프가드: 제어 평면(CDC)의 측정 지연과 클라이언트 헤더 중 보수적인(큰) 값 선택
+        const controlLag = arb.current_lag_bytes ?? null;
+        const clientLag = lagBytes !== null && !isNaN(lagBytes) ? lagBytes : null;
+        const effectiveLag = clientLag !== null && controlLag !== null ? Math.max(controlLag, clientLag) : controlLag;
+        const maxLag = arb.max_lag_bytes ?? 1024;
 
-      // Fail-closed: 지연 상태를 알 수 없거나 임계치를 초과하면 절대 우회하지 않고 SOURCE(마스터)로 펜싱
-      const safe = effectiveLag !== null && effectiveLag <= maxLag;
-      if (safe && Math.random() < (arb.read_target_weight ?? 0.0)) {
-        origin = "TARGET";
-        viaArbitrage = true;
+        // Fail-closed: 지연 상태를 알 수 없거나 임계치를 초과하면 절대 우회하지 않고 SOURCE(마스터)로 펜싱
+        const safe = effectiveLag !== null && effectiveLag <= maxLag;
+        if (safe && Math.random() < (arb.read_target_weight ?? 0.0)) {
+          origin = "TARGET";
+          viaArbitrage = true;
+        }
       }
     }
 
     const ticket = ++this.seq;
     this.tickets.set(ticket, { origin, startedAt: Date.now() });
     // target: 제어 명령으로 정한 GCP 쪽 주소 (없으면 null). 예전에 저장된 상태에는 이 칸이 없어서 ?? 로 맞춘다
-    return { origin, ticket, target: this.state.target_url ?? null, viaArbitrage };
+    return { origin, ticket, target: this.state.target_url ?? null, viaArbitrage, viaQuarantine };
   }
 
   // exit: 요청이 원본에서 응답을 받아 끝났을 때 부른다. "처리 중" 명단에서 번호표를 지우고 결과를 센다.
@@ -231,6 +244,27 @@ export class Gate extends DurableObject {
         max_lag_bytes: 1024,
         current_lag_bytes: 0,
         lag_updated_at: null,
+      }
+    );
+  }
+
+  async setQuarantine({ isolated_nodes, reroute_target }) {
+    this.state.quarantine = {
+      isolated_nodes: Array.isArray(isolated_nodes) ? isolated_nodes : [],
+      reroute_target: typeof reroute_target === "string" ? reroute_target : null,
+      quarantined_at: iso(),
+    };
+    this.state.updated_at = iso();
+    await this.save();
+    return ok(this.state.quarantine);
+  }
+
+  async getQuarantine() {
+    return ok(
+      this.state.quarantine ?? {
+        isolated_nodes: [],
+        reroute_target: null,
+        quarantined_at: null,
       }
     );
   }

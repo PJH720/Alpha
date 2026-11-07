@@ -79,6 +79,15 @@ async function control(request, url, gate, env) {
     return respond(await gate.setArbitrage(body));
   }
 
+  // 보안 침해 노드 격리 제어 명령: GET 조회, POST 설정
+  if (command === "quarantine") {
+    if (request.method === "GET") return respond(await gate.getQuarantine());
+    if (request.method !== "POST") return error(405, "method not allowed");
+    const body = await readJson(request);
+    if (!body) return error(400, "invalid json");
+    return respond(await gate.setQuarantine(body));
+  }
+
   if (!["hold", "switch", "release", "reset"].includes(command)) return error(404, "not found");
   if (request.method !== "POST") return error(405, "method not allowed");
   if (command === "reset") return respond(await gate.reset());
@@ -119,7 +128,7 @@ export default {
     const lagHeader = request.headers.get("X-Replication-Lag-Bytes");
     const lagBytes = lagHeader ? parseInt(lagHeader, 10) : null;
     let isFailure = true; // 원본 응답을 받기 전에 끝나면 실패로 센다
-    const { origin, ticket, target, viaArbitrage } = await gate.enter({ isWrite, lagBytes });
+    const { origin, ticket, target, viaArbitrage, viaQuarantine } = await gate.enter({ isWrite, lagBytes });
     try {
       // TARGET 이면 제어 명령으로 정한 주소(target)를 먼저 쓰고, 없으면 설정값 UPSTREAM_TARGET 을 쓴다
       const base = origin === "TARGET" ? target || env.UPSTREAM_TARGET : env.UPSTREAM_SOURCE;
@@ -146,6 +155,9 @@ export default {
       out.headers.set("X-Gate-Origin", origin);
       if (viaArbitrage) {
         out.headers.set("X-Arbitrage", "true");
+      }
+      if (viaQuarantine) {
+        out.headers.set("X-Quarantine", "true");
       }
       return out;
     } catch (cause) {

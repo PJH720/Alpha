@@ -15,6 +15,10 @@ interface Props {
   selectedNode: "source" | "cdc" | "target" | null;
   onSelectNode: (node: "source" | "cdc" | "target" | null) => void;
   onNavigateSection?: (sectionId: string) => void;
+  isCompromised?: boolean;
+  isQuarantined?: boolean;
+  riskScore?: number;
+  onReroute?: () => void;
 }
 
 function FocusController({
@@ -51,6 +55,10 @@ export function CloudMorphScene({
   selectedNode,
   onSelectNode,
   onNavigateSection,
+  isCompromised,
+  isQuarantined,
+  riskScore,
+  onReroute,
 }: Props) {
   const localControlsRef = useRef<OrbitControlsHandle | null>(null);
   const sourceRef = useRef<THREE.Group | null>(null);
@@ -124,6 +132,10 @@ export function CloudMorphScene({
             selectedNode={selectedNode}
             onSelectNode={onSelectNode}
             onNavigateSection={onNavigateSection}
+            isCompromised={isCompromised}
+            isQuarantined={isQuarantined}
+            riskScore={riskScore}
+            onReroute={onReroute}
           />
           <CdcPipelineArc
             run={run}
