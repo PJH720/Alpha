@@ -627,6 +627,16 @@ def run_db_migration(
                     latest_phase[0] = phase
                     if phase in APP_DEPLOY_PHASES:
                         ready_event.set()
+                lag = forwarded.get("replication_lag_bytes")
+                if lag is not None and isinstance(lag, (int, float)):
+                    try:
+                        from app.features.provisioning.worker_client import WorkerClient
+
+                        worker = WorkerClient.from_env()
+                        if worker is not None:
+                            worker.sync_lag(int(lag))
+                    except Exception:
+                        pass
             if ctx is not None and not run_aborted.is_set():
                 # db_migration/service.py 가 종료 시점에 ctx.report("failed", ...) 또는 ctx.report("stopped", ...) 를 호출할 수 있습니다.
                 # workflows 규격상 완료/실패는 runner 반환 및 예외로 판정하므로, reportable 상태일 때만 forward 합니다.

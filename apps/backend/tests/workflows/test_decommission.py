@@ -73,6 +73,31 @@ def test_decommission_is_refused_when_nothing_is_wired(http_with):
     assert http.post(f"/runs/{run_id}/decommission").status_code == 409
 
 
+def test_decommission_is_refused_when_verification_fails(http_with):
+    http = http_with(lambda r: "정리 완료")
+    run_id = http.post("/runs", json=BODY).json()["run_id"]
+    for stage in ("discovery", "planning"):
+        http.post(f"/runs/{run_id}/stages/{stage}/manual", json={"output": {"stage": stage}})
+    http.post(f"/runs/{run_id}/approve", json={"gate": "plan"})
+    for stage in ("provisioning", "db_migration", "app_deploy"):
+        http.post(f"/runs/{run_id}/stages/{stage}/manual", json={"output": {"stage": stage}})
+    http.post(f"/runs/{run_id}/approve", json={"gate": "cutover", "acknowledge_unknown": True})
+    # 검증 실패(mismatch)가 기록된 경우
+    http.post(f"/runs/{run_id}/stages/cutover/manual", json={"output": {"serving": "gcp", "verification": {"status": "mismatch"}}})
+
+    res = http.post(f"/runs/{run_id}/decommission")
+    assert res.status_code == 409
+    assert "match" in res.json()["detail"]
+
+
+def test_decommission_records_operator(http_with):
+    http = http_with(lambda r: "정리 완료")
+    run_id = _succeeded_run(http)
+    res = http.post(f"/runs/{run_id}/decommission?operator=admin-pj")
+    assert res.status_code == 200
+    assert "admin-pj" in res.json()["cleanup_message"]
+
+
 # -- runners.decommission_cdc: db_workflow.finish 결과를 문장으로 --------------------------------------
 
 

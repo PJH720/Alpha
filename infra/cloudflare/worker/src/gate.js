@@ -21,8 +21,9 @@ const initialState = () => ({
     enabled: false,
     read_target_weight: 0.0,
     max_lag_bytes: 1024,
-    current_lag_bytes: 0,
+    current_lag_bytes: null, // 초기값 null (알 수 없음 -> Fail-Closed 적용)
     lag_updated_at: null,
+    read_after_write_fence_sec: 5,
   },
 });
 
@@ -40,6 +41,7 @@ export class Gate extends DurableObject {
     this.tickets = new Map();
     this.seq = 0;
     this.counts = newCounts();
+    this.recentWrites = new Map();
 
   
     ctx.blockConcurrencyWhile(async () => {
@@ -84,8 +86,12 @@ export class Gate extends DurableObject {
   }
 
   // enter: 요청이 들어왔을 때 부른다. "보류 중"이면 붙잡아 두고, 풀리면 어디로 갈지(origin)를 돌려줌.
-  async enter({ isWrite = false, lagBytes = null } = {}) {
+  async enter({ isWrite = false, lagBytes = null, clientIp = null } = {}) {
     await this.expireHold();
+
+    if (isWrite && clientIp) {
+      this.recentWrites.set(clientIp, Date.now());
+    }
 
     if (this.state.mode === "HOLD") {
       this.state.held_count += 1;
@@ -111,13 +117,21 @@ export class Gate extends DurableObject {
     const arb = this.state.arbitrage;
     if (this.state.mode === "SOURCE" && arb?.enabled && !isWrite) {
       // 복제 지연 세이프가드: 제어 평면(CDC)의 측정 지연과 클라이언트 헤더 중 보수적인(큰) 값 선택
-      const controlLag = arb.current_lag_bytes ?? null;
+      // 지연 메트릭이 15초 이상 갱신되지 않았으면 지연 상태를 모르는 것(stale -> null)으로 판단
+      const LAG_STALE_MS = 15000;
+      const isStale = !arb.lag_updated_at || (Date.now() - new Date(arb.lag_updated_at).getTime() > LAG_STALE_MS);
+      const controlLag = isStale ? null : (arb.current_lag_bytes ?? null);
       const clientLag = lagBytes !== null && !isNaN(lagBytes) ? lagBytes : null;
-      const effectiveLag = clientLag !== null && controlLag !== null ? Math.max(controlLag, clientLag) : controlLag;
+      const effectiveLag = clientLag !== null && controlLag !== null ? Math.max(controlLag, clientLag) : (controlLag ?? clientLag);
       const maxLag = arb.max_lag_bytes ?? 1024;
 
-      // Fail-closed: 지연 상태를 알 수 없거나 임계치를 초과하면 절대 우회하지 않고 SOURCE(마스터)로 펜싱
-      const safe = effectiveLag !== null && effectiveLag <= maxLag;
+      // 1. Read-After-Write 세션 고정 세이프가드: 최근 쓰기를 수행한 클라이언트(IP)는 N초간 마스터(SOURCE)로 고정
+      const fenceSec = Number(arb.read_after_write_fence_sec) || 5;
+      const lastWrite = clientIp ? this.recentWrites.get(clientIp) : null;
+      const isRecentlyWritten = Boolean(lastWrite && Date.now() - lastWrite < fenceSec * 1000);
+
+      // Fail-closed: 최근 쓰기 세션이거나, 지연 상태를 알 수 없거나 임계치를 초과하면 절대 우회하지 않고 SOURCE(마스터)로 펜싱
+      const safe = !isRecentlyWritten && effectiveLag !== null && effectiveLag <= maxLag;
       if (safe && Math.random() < (arb.read_target_weight ?? 0.0)) {
         origin = "TARGET";
         viaArbitrage = true;
@@ -207,16 +221,22 @@ export class Gate extends DurableObject {
     const enabled = typeof body.enabled === "boolean" ? body.enabled : body.enabled === "true";
     const readWeight = Math.max(0.0, Math.min(1.0, Number(body.read_target_weight) || 0.0));
     const maxLag = Number.isFinite(Number(body.max_lag_bytes)) ? Math.max(0, Number(body.max_lag_bytes)) : 1024;
-    const currentLag = Number.isFinite(Number(body.current_lag_bytes))
+    const fenceSec = Number.isFinite(Number(body.read_after_write_fence_sec))
+      ? Math.max(0, Number(body.read_after_write_fence_sec))
+      : (this.state.arbitrage?.read_after_write_fence_sec ?? 5);
+    const hasLag = Number.isFinite(Number(body.current_lag_bytes));
+    const currentLag = hasLag
       ? Math.max(0, Number(body.current_lag_bytes))
-      : (this.state.arbitrage?.current_lag_bytes ?? 0);
+      : (body.current_lag_bytes === null ? null : (this.state.arbitrage?.current_lag_bytes ?? null));
+    const lagUpdatedAt = hasLag ? iso() : (this.state.arbitrage?.lag_updated_at ?? null);
 
     this.state.arbitrage = {
       enabled,
       read_target_weight: readWeight,
       max_lag_bytes: maxLag,
       current_lag_bytes: currentLag,
-      lag_updated_at: iso(),
+      lag_updated_at: lagUpdatedAt,
+      read_after_write_fence_sec: fenceSec,
     };
     this.state.updated_at = iso();
     await this.save();
@@ -229,8 +249,9 @@ export class Gate extends DurableObject {
         enabled: false,
         read_target_weight: 0.0,
         max_lag_bytes: 1024,
-        current_lag_bytes: 0,
+        current_lag_bytes: null,
         lag_updated_at: null,
+        read_after_write_fence_sec: 5,
       }
     );
   }
@@ -241,6 +262,7 @@ export class Gate extends DurableObject {
     this.state = initialState();
     this.tickets.clear();
     this.counts = newCounts();
+    this.recentWrites.clear();
     await this.save();
     for (const wake of this.waiters.splice(0)) wake();
     return ok(this.view());

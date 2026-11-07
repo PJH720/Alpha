@@ -30,6 +30,7 @@ from .schemas import (
 from .runners import RUNNERS, clean_up_cdc, decommission_cdc
 from .store import RunNotFound, RunStore
 from .target_adapters import UnsupportedTarget, adapter_for
+from app.core.local_access import require_local_access
 
 router = APIRouter(prefix="/runs", tags=["workflows"])
 logger = logging.getLogger(__name__)
@@ -150,13 +151,19 @@ def retry_cleanup(run_id: str, background: BackgroundTasks, engine: Engine = Dep
     return run
 
 
-@router.post("/{run_id}/decommission", response_model=RunDetail)
-def decommission_run(run_id: str, background: BackgroundTasks, engine: Engine = Depends(get_engine)) -> RunDetail:
+@router.post("/{run_id}/decommission", response_model=RunDetail, dependencies=[Depends(require_local_access)])
+def decommission_run(
+    run_id: str,
+    background: BackgroundTasks,
+    operator: str | None = Query(None, description="철거 승인자 식별자"),
+    engine: Engine = Depends(get_engine),
+) -> RunDetail:
     """전환이 끝난 run 의 이전 자원(CDC 복제 작업·복제 슬롯·VPN)을 정리합니다. 실패하면 다시 부를 수 있습니다.
 
     VPN 삭제가 몇 분 걸려 백그라운드에서 돌립니다. 진행과 결과는 cleanup_state · cleanup_message 에 남습니다.
+    비가역 조치이므로 로컬 권한(require_local_access)과 데이터 검증(match) 상태를 확인합니다.
     """
-    run = _apply(run_id, lambda: engine.start_decommission(run_id))
+    run = _apply(run_id, lambda: engine.start_decommission(run_id, operator=operator))
     background.add_task(engine.run_decommission, run_id)
     return run
 
