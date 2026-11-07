@@ -52,8 +52,12 @@ class RerouteRequest(BaseModel):
     run_id: str | None = None
 
 
+class ReleaseQuarantineRequest(BaseModel):
+    node_id: str | None = Field(default=None, description="특정 노드 해제, 생략 시 전체 해제")
+
+
 class RerouteResponse(BaseModel):
-    status: Literal["rerouted", "quarantined", "failed"]
+    status: Literal["rerouted", "quarantined", "released", "failed"]
     quarantined_node_id: str
     active_target_id: str
     reroute_latency_ms: float

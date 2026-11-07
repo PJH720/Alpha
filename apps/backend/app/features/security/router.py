@@ -1,8 +1,10 @@
 from typing import List
 from fastapi import APIRouter, Depends, Query
+from app.core.local_access import require_local_access
 from .schemas import (
     BlastRadiusRequest,
     BlastRadiusResponse,
+    ReleaseQuarantineRequest,
     RerouteRequest,
     RerouteResponse,
     SecurityAlert,
@@ -40,10 +42,20 @@ def compute_blast_radius(
     )
 
 
-@router.post("/reroute", response_model=RerouteResponse)
+@router.post("/reroute", response_model=RerouteResponse, dependencies=[Depends(require_local_access)])
 def reroute_compromised_node(
     req: RerouteRequest,
     service: SecurityGovernanceService = Depends(get_security_service),
 ) -> RerouteResponse:
     """침해된 노드를 즉시 격리(Quarantine)하고 Cloudflare 에지를 통해 안전한 대체 CSP로 우회합니다."""
     return service.execute_reroute(req)
+
+
+@router.post("/release", response_model=RerouteResponse, dependencies=[Depends(require_local_access)])
+def release_quarantined_node(
+    req: ReleaseQuarantineRequest | None = None,
+    service: SecurityGovernanceService = Depends(get_security_service),
+) -> RerouteResponse:
+    """격리되었던 노드의 격리를 해제하고 정상 원본 트래픽으로 롤백 복원합니다."""
+    node_id = req.node_id if req else None
+    return service.release_quarantine(node_id)

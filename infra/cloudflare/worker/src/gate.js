@@ -117,12 +117,29 @@ export class Gate extends DurableObject {
     let origin = this.state.mode;
     let viaArbitrage = false;
     let viaQuarantine = false;
+    let isBlocked = false;
+    let blockReason = null;
 
-    // 보안 침해 격리(Quarantine) 라우팅: SOURCE 노드가 격리 명단에 있으면 즉시 TARGET으로 우회
+    // 보안 침해 격리(Quarantine) 라우팅:
+    // SOURCE 모드이고 격리 명단에 유효한 노드가 등록되어 있을 때
     const q = this.state.quarantine;
-    if (this.state.mode === "SOURCE" && q?.isolated_nodes?.length > 0) {
-      origin = "TARGET";
-      viaQuarantine = true;
+    const cleanNodes = Array.isArray(q?.isolated_nodes)
+      ? q.isolated_nodes.filter((n) => typeof n === "string" && n.trim().length > 0).map((n) => n.trim())
+      : [];
+    const hasQuarantine = this.state.mode === "SOURCE" && cleanNodes.length > 0;
+
+    if (hasQuarantine) {
+      if (isWrite) {
+        // [안전 게이트]: 전환 전 원본 침해 격리 시 쓰기(Write)를 Read-Only 타깃으로 보내면 split-brain 및 데이터 유실 발생.
+        // 쓰기 요청은 503 Service Unavailable ("quarantine_write_blocked") 로 안전하게 차단한다.
+        isBlocked = true;
+        blockReason = "quarantine_write_blocked";
+        viaQuarantine = true;
+      } else {
+        // 읽기(Read) 요청만 안전한 대체 타깃으로 즉시 우회
+        origin = "TARGET";
+        viaQuarantine = true;
+      }
     } else {
       // 차익거래 라우팅: 모드가 SOURCE일 때, 쓰기가 아닌 읽기 요청이고
       // 복제 지연이 허용 임계치 이내이면 Cloud Run(TARGET)으로 가중치 기반 라우팅
@@ -151,14 +168,30 @@ export class Gate extends DurableObject {
       }
     }
 
+    if (isBlocked) {
+      return {
+        origin: "BLOCKED",
+        ticket: null,
+        target: null,
+        viaArbitrage: false,
+        viaQuarantine: true,
+        isBlocked: true,
+        blockReason,
+      };
+    }
+
     const ticket = ++this.seq;
     this.tickets.set(ticket, { origin, startedAt: Date.now() });
     // target: 제어 명령으로 정한 GCP 쪽 주소 (없으면 null). 예전에 저장된 상태에는 이 칸이 없어서 ?? 로 맞춘다
-<<<<<<< HEAD
-    return { origin, ticket, target: this.state.target_url ?? null, viaArbitrage, viaQuarantine };
-=======
-    return { origin, ticket, target: this.state.target_url ?? null, viaArbitrage };
->>>>>>> main
+    return {
+      origin,
+      ticket,
+      target: this.state.target_url ?? null,
+      viaArbitrage,
+      viaQuarantine,
+      isBlocked: false,
+      blockReason: null,
+    };
   }
 
   // exit: 요청이 원본에서 응답을 받아 끝났을 때 부른다. "처리 중" 명단에서 번호표를 지우고 결과를 센다.
@@ -273,11 +306,20 @@ export class Gate extends DurableObject {
     );
   }
 
-  async setQuarantine({ isolated_nodes, reroute_target }) {
+  async setQuarantine({ isolated_nodes, reroute_target } = {}) {
+    await this.expireHold();
+    // 노드 ID 엄격 검증: string 타입이고 비어있지 않은 값만 필터링 (null, number, 빈문자열 등 거절)
+    const validNodes = Array.isArray(isolated_nodes)
+      ? isolated_nodes.filter((n) => typeof n === "string" && n.trim().length > 0).map((n) => n.trim())
+      : [];
+    const cleanTarget = typeof reroute_target === "string" && reroute_target.trim().length > 0
+      ? reroute_target.trim()
+      : null;
+
     this.state.quarantine = {
-      isolated_nodes: Array.isArray(isolated_nodes) ? isolated_nodes : [],
-      reroute_target: typeof reroute_target === "string" ? reroute_target : null,
-      quarantined_at: iso(),
+      isolated_nodes: validNodes,
+      reroute_target: cleanTarget,
+      quarantined_at: validNodes.length > 0 ? iso() : null,
     };
     this.state.updated_at = iso();
     await this.save();

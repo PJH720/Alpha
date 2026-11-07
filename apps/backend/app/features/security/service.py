@@ -94,9 +94,9 @@ class SecurityGovernanceService:
                 provider="aws",
                 severity="CRITICAL",
                 resource_type="container",
-                resource_id="arn:aws:ecs:ap-northeast-2:123456789012:task/work-items-app/task-a19c",
+                resource_id="arn:aws:ecs:ap-northeast-2:123456789012:task/work-items-app/aws-ecs-workitems",
                 threat_category="UnauthorizedAccess:EC2/MaliciousIPCaller.Custom",
-                description="GuardDuty detected outbound communication to a known Tor exit node with abnormal egress traffic spikes (CVE-2026-4192 RCE suspect).",
+                description="GuardDuty detected outbound communication to a known Tor exit node with abnormal egress traffic spikes (CVE-2026-4192 RCE suspect, 데모 시뮬레이션 데이터).",
                 detected_at=datetime.now(timezone.utc),
             ),
             SecurityAlert(
@@ -106,7 +106,7 @@ class SecurityGovernanceService:
                 resource_type="database",
                 resource_id="//cloudresourcemanager.googleapis.com/projects/softbank-alpha/cloudsql/instances/alpha-replica",
                 threat_category="PUBLIC_SQL_INSTANCE_DISABLED",
-                description="SCC audit verified Cloud SQL instance enforces Private Services Access (VPC peering only, 0 public IP).",
+                description="SCC audit verified Cloud SQL instance enforces Private Services Access (VPC peering only, 0 public IP, 데모 시뮬레이션 데이터).",
                 detected_at=datetime.now(timezone.utc),
             ),
         ]
@@ -121,13 +121,28 @@ class SecurityGovernanceService:
         depth_hops: int = 2,
         alpha_decay: float = 0.45,
     ) -> BlastRadiusResponse:
-        # 루트 알림 찾기
-        root_alert = next(
-            (a for a in self._alerts if compromised_node_id in a.resource_id or a.resource_id.endswith(compromised_node_id)),
-            self._alerts[0],
+        # 루트 알림 매칭: node_id가 resource_id에 포함된 알림 검색
+        matched_alert = next(
+            (a for a in self._alerts if compromised_node_id and compromised_node_id in a.resource_id),
+            None,
         )
 
-        base_weight = SEVERITY_WEIGHTS.get(root_alert.severity, 0.5)
+        if matched_alert:
+            root_alert = matched_alert
+            base_weight = SEVERITY_WEIGHTS.get(root_alert.severity, 0.5)
+        else:
+            # 알림이 없는 임의 노드일 경우 기본 시뮬레이션 알림 생성
+            root_alert = SecurityAlert(
+                id=f"sec-sim-{compromised_node_id}",
+                provider=DEFAULT_NODE_METADATA.get(compromised_node_id, {}).get("provider", "aws"),
+                severity="LOW",
+                resource_type=DEFAULT_NODE_METADATA.get(compromised_node_id, {}).get("resource_type", "vm"),
+                resource_id=f"simulated://{compromised_node_id}",
+                threat_category="SuspiciousActivity:GenericSimulation",
+                description=f"시뮬레이션: [{compromised_node_id}] 잠재적 위협 탐지 (데모 데이터)",
+                detected_at=datetime.now(timezone.utc),
+            )
+            base_weight = SEVERITY_WEIGHTS["LOW"]
 
         # BFS 로 의존성 그래프 탐색 및 전파 점수 연산: S(v) = weight * exp(-alpha * hop)
         visited = {compromised_node_id: 0}
@@ -192,8 +207,8 @@ class SecurityGovernanceService:
             max_risk_score=base_weight,
             impacted_nodes=nodes,
             recommended_action=(
-                f"침해된 [{compromised_node_id}] 인그레스 차단 및 0.4초 무중단으로 "
-                f"GCP Cloud Run [{safe_targets[0]}] 으로 트래픽 즉각 우회(Reroute)"
+                f"침해된 [{compromised_node_id}] 인그레스 차단 및 무중단으로 "
+                f"GCP Cloud Run [{safe_targets[0]}] 으로 트래픽 우회 권장"
             ),
             safe_reroute_targets=safe_targets,
         )
@@ -205,8 +220,24 @@ class SecurityGovernanceService:
         if request.quarantine:
             self._quarantined_nodes.add(request.compromised_node_id)
 
-        # 에지 프록시 우회 가상 지연 측정 (목표: < 500ms)
-        elapsed_ms = round((time.perf_counter() - start_ts) * 1000 + 41.5, 2)
+        cloudflare_synced = False
+        sync_mode = "시뮬레이션 (Worker 미설정)"
+
+        try:
+            from app.features.provisioning.worker_client import WorkerClient
+
+            worker = WorkerClient.from_env()
+            if worker is not None:
+                worker.set_quarantine(
+                    isolated_nodes=list(self._quarantined_nodes),
+                    reroute_target=request.target_reroute_id,
+                )
+                cloudflare_synced = True
+                sync_mode = "Cloudflare Worker 에지 동기화 완료"
+        except Exception as exc:
+            sync_mode = f"Cloudflare Worker 동기화 실패 ({exc})"
+
+        elapsed_ms = round((time.perf_counter() - start_ts) * 1000, 2)
 
         return RerouteResponse(
             status="rerouted",
@@ -214,8 +245,45 @@ class SecurityGovernanceService:
             active_target_id=request.target_reroute_id,
             reroute_latency_ms=elapsed_ms,
             message=(
-                f"보안 위험 노드 [{request.compromised_node_id}] 가 성공적으로 격리(Quarantine)되었습니다. "
-                f"전체 인입 트래픽이 [{request.target_reroute_id}] 으로 {elapsed_ms}ms 만에 우회되었습니다."
+                f"보안 위험 노드 [{request.compromised_node_id}] 가 격리되었습니다. "
+                f"트래픽이 [{request.target_reroute_id}] 으로 우회되었습니다 ({sync_mode}, 처리 시간: {elapsed_ms}ms)."
             ),
-            cloudflare_synced=True,
+            cloudflare_synced=cloudflare_synced,
+        )
+
+    def release_quarantine(self, node_id: str | None = None) -> RerouteResponse:
+        start_ts = time.perf_counter()
+
+        if node_id:
+            self._quarantined_nodes.discard(node_id)
+        else:
+            self._quarantined_nodes.clear()
+
+        cloudflare_synced = False
+        sync_mode = "시뮬레이션 (Worker 미설정)"
+
+        try:
+            from app.features.provisioning.worker_client import WorkerClient
+
+            worker = WorkerClient.from_env()
+            if worker is not None:
+                worker.set_quarantine(
+                    isolated_nodes=list(self._quarantined_nodes),
+                    reroute_target=None if not self._quarantined_nodes else "gcp-cloud-run",
+                )
+                cloudflare_synced = True
+                sync_mode = "Cloudflare Worker 에지 동기화 완료"
+        except Exception as exc:
+            sync_mode = f"Cloudflare Worker 동기화 실패 ({exc})"
+
+        elapsed_ms = round((time.perf_counter() - start_ts) * 1000, 2)
+        target_name = node_id or "전체 노드"
+
+        return RerouteResponse(
+            status="released",
+            quarantined_node_id=target_name,
+            active_target_id="aws-ecs-workitems",
+            reroute_latency_ms=elapsed_ms,
+            message=f"[{target_name}] 격리 해제 완료 ({sync_mode}, 처리 시간: {elapsed_ms}ms).",
+            cloudflare_synced=cloudflare_synced,
         )

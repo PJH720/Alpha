@@ -100,10 +100,10 @@ export function BlastRadiusMesh({
           <div className="text-center font-sans text-[10px] text-ink/75">
             {isQuarantined ? (
               <span className="text-emerald-700 font-medium">
-                안전 타깃(GCP Cloud Run)으로 0.4초 우회 완료
+                GCP Cloud Run 격리 우회 활성 (원본 쓰기 차단됨)
               </span>
             ) : (
-              <span>AWS ECS 태스크 침해 탐지 (GuardDuty CVE-2026-4192)</span>
+              <span>AWS ECS 태스크 침해 탐지 (GuardDuty CVE-2026-4192 시뮬레이션)</span>
             )}
           </div>
 
@@ -113,7 +113,7 @@ export function BlastRadiusMesh({
               onClick={onReroute}
               className="mt-0.5 inline-flex items-center gap-1 rounded border border-ink bg-red-600 px-2 py-0.5 font-mono text-[10px] font-bold text-white shadow-[1px_1px_0_0_var(--color-ink)] transition-transform hover:-translate-y-0.5 hover:bg-red-700 active:translate-y-0"
             >
-              <span>🚨 0.4초 GCP 즉각 우회 (Drag/Click)</span>
+              <span>🚨 목표 0.4초 내 GCP 즉각 우회 (Drag/Click)</span>
             </button>
           )}
         </div>

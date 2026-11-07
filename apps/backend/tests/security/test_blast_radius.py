@@ -62,7 +62,17 @@ def test_blast_radius_api_endpoint():
     assert "gcp-cloud-run" in body["safe_reroute_targets"]
 
 
-def test_reroute_and_quarantine():
+def test_reroute_and_quarantine_with_worker_sync(monkeypatch):
+    from app.features.provisioning.worker_client import WorkerClient
+
+    calls = []
+
+    class FakeWorker:
+        def set_quarantine(self, isolated_nodes, reroute_target):
+            calls.append((isolated_nodes, reroute_target))
+            return {"isolated_nodes": isolated_nodes, "reroute_target": reroute_target}
+
+    monkeypatch.setattr(WorkerClient, "from_env", lambda: FakeWorker())
     client = TestClient(app)
     resp = client.post(
         "/security/reroute",
@@ -79,3 +89,45 @@ def test_reroute_and_quarantine():
     assert body["active_target_id"] == "gcp-cloud-run"
     assert body["reroute_latency_ms"] < 500  # < 500ms SLA
     assert body["cloudflare_synced"] is True
+    assert len(calls) == 1
+    assert "aws-ecs-workitems" in calls[0][0]
+
+
+def test_reroute_simulation_when_worker_not_configured(monkeypatch):
+    from app.features.provisioning.worker_client import WorkerClient
+
+    monkeypatch.setattr(WorkerClient, "from_env", lambda: None)
+    client = TestClient(app)
+    resp = client.post(
+        "/security/reroute",
+        json={
+            "compromised_node_id": "aws-ecs-workitems",
+            "target_reroute_id": "gcp-cloud-run",
+            "quarantine": True,
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["cloudflare_synced"] is False
+    assert "시뮬레이션" in body["message"]
+
+
+def test_release_quarantine(monkeypatch):
+    from app.features.provisioning.worker_client import WorkerClient
+
+    calls = []
+
+    class FakeWorker:
+        def set_quarantine(self, isolated_nodes, reroute_target):
+            calls.append((isolated_nodes, reroute_target))
+            return {"isolated_nodes": isolated_nodes, "reroute_target": reroute_target}
+
+    monkeypatch.setattr(WorkerClient, "from_env", lambda: FakeWorker())
+    client = TestClient(app)
+    resp = client.post("/security/release", json={"node_id": "aws-ecs-workitems"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "released"
+    assert body["cloudflare_synced"] is True
+    assert len(calls) == 1
+    assert calls[0][0] == []

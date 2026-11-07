@@ -132,10 +132,20 @@ export default {
       request.headers.get("X-Forwarded-For")?.split(",")[0]?.trim() ||
       "default";
     let isFailure = true; // 원본 응답을 받기 전에 끝나면 실패로 센다
-    const { origin, ticket, target, viaArbitrage, viaQuarantine } = await gate.enter({ isWrite, lagBytes, clientIp });
+    const { origin, ticket, target, viaArbitrage, viaQuarantine, isBlocked, blockReason } = await gate.enter({ isWrite, lagBytes, clientIp });
+
+    if (isBlocked) {
+      return error(503, `request blocked: primary node is under security quarantine (${blockReason || "write_blocked"})`);
+    }
+
     try {
       // TARGET 이면 제어 명령으로 정한 주소(target)를 먼저 쓰고, 없으면 설정값 UPSTREAM_TARGET 을 쓴다
-      const base = origin === "TARGET" ? target || env.UPSTREAM_TARGET : env.UPSTREAM_SOURCE;
+      let base = origin === "TARGET" ? target || env.UPSTREAM_TARGET : env.UPSTREAM_SOURCE;
+
+      // [안전 방어]: 격리 우회 중인데 TARGET 주소가 미설정된 경우 500 에러 대신 안전하게 SOURCE 로 폴백
+      if (!base && viaQuarantine) {
+        base = env.UPSTREAM_SOURCE;
+      }
       if (!base) return error(500, `upstream for ${origin} is not configured`);
 
       // 경로를 new URL(경로, base) 로 합치면 "//호스트/경로" 를 다른 호스트로 해석해서 요청이 엉뚱한 곳으로 나간다.

@@ -33,7 +33,7 @@ export interface BlastRadiusResponse {
 }
 
 export interface RerouteResponse {
-  status: "rerouted" | "quarantined" | "failed";
+  status: "rerouted" | "quarantined" | "released" | "failed";
   quarantined_node_id: string;
   active_target_id: string;
   reroute_latency_ms: number;
@@ -58,5 +58,11 @@ export const securityApi = {
         target_reroute_id: targetRerouteId,
         quarantine: true,
       }),
+    }),
+
+  releaseQuarantine: (nodeId?: string) =>
+    request<RerouteResponse>("/api/security/release", {
+      method: "POST",
+      body: JSON.stringify({ node_id: nodeId ?? null }),
     }),
 };
