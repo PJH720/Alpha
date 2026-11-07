@@ -143,7 +143,104 @@ AZURE = ProviderConfig(
     adapt=azure_adapt,
 )
 
-PROVIDERS: dict[str, ProviderConfig] = {GCP.name: GCP, AZURE.name: AZURE}
+# Fargate 가 받는 (vCPU, 메모리 MiB) 조합. vCPU 마다 메모리 범위가 정해져 있다 (1 vCPU = 1024 CPU 단위).
+def _mib_range(low: int, high: int) -> tuple[int, ...]:
+    return tuple(range(low, high + 1, 1024))
+
+
+FARGATE_SIZES: tuple[tuple[float, tuple[int, ...]], ...] = (
+    (0.25, (512, 1024, 2048)),
+    (0.5, _mib_range(1024, 4096)),
+    (1.0, _mib_range(2048, 8192)),
+    (2.0, _mib_range(4096, 16384)),
+    (4.0, _mib_range(8192, 30720)),
+)
+
+
+# ALB 대상 그룹은 프로세스만 보는 경로(live)를 써야 한다. DB 까지 보는 ready 를 쓰면 RDS 재부팅처럼 DB 가 잠깐 막힐 때
+# 정상 태스크까지 계속 교체된다. 조사 단계는 원본에서 경로를 못 읽으면 기본값으로 ready 를 채우므로 여기서 바꾼다.
+# 전환 판단용 ready 확인은 provisioning 이 앱 배포 뒤에 따로 한다 (service._wait_healthy).
+READINESS_PATH = "/health/ready"
+LIVENESS_PATH = "/health/live"
+
+
+# 조사 결과의 앱 크기를 Fargate 가 받는 조합으로 바꾸는 함수. 상태 확인 경로도 여기서 ALB 용으로 바꾼다.
+# 원본이 필요로 하는 만큼을 덮는 가장 작은 조합을 고르고, 한도를 넘으면 가장 큰 조합으로 맞추고 알린다.
+# DB 등급은 넘기지 않는다 (known_variables 에 없음). 조사 결과의 등급 이름은 GCP 것이라 RDS 가 받지 못한다.
+def aws_adapt(target_infra: Mapping[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    infra = dict(target_infra)
+    notes: list[str] = []
+    if infra.get("health_check_path") == READINESS_PATH:
+        infra["health_check_path"] = LIVENESS_PATH
+        notes.append(
+            f"ALB 상태 확인 경로를 {READINESS_PATH} 에서 {LIVENESS_PATH} 로 바꿨습니다 "
+            "(DB 가 잠깐 막혀도 정상 태스크가 교체되지 않게 하려는 것입니다)"
+        )
+    cpu, memory = infra.get("cpu"), infra.get("memory")
+    if cpu is None and memory is None:
+        return infra, notes
+
+    wanted_cpu = _number(cpu, "cpu") if cpu is not None else 0.0
+    wanted_memory = _number(memory, "memory") if memory is not None else 0.0
+
+    # 한도를 넘는 축만 그 축의 한도로 맞춘다. 예를 들어 cpu 만 넘으면 cpu 는 4 로, 메모리는 요청한 값을 덮는 가장 작은 값으로 한다
+    # (한도를 넘었다고 다른 축까지 최대로 올리면 비용이 크게 나온다).
+    max_cpu, max_memory = FARGATE_SIZES[-1][0], FARGATE_SIZES[-1][1][-1]
+    over_limit = wanted_cpu > max_cpu or wanted_memory > max_memory
+    search_cpu, search_memory = min(wanted_cpu, max_cpu), min(wanted_memory, max_memory)
+
+    chosen: tuple[float, int] | None = None
+    for vcpu, memories in FARGATE_SIZES:
+        if vcpu < search_cpu:
+            continue
+        fit = next((value for value in memories if value >= search_memory), None)
+        if fit is not None:
+            chosen = (vcpu, fit)
+            break
+    assert chosen is not None  # 한도 안으로 줄였으므로 항상 찾는다
+
+    if over_limit:
+        notes.append(
+            f"원본 앱 크기(cpu {cpu}, memory {memory} MiB)가 Fargate 한도를 넘어 cpu {chosen[0]:g}, memory {chosen[1]} MiB 로 맞췄습니다"
+        )
+    elif (wanted_cpu, wanted_memory) != chosen:
+        notes.append(
+            f"앱 크기를 Fargate 규칙에 맞췄습니다: cpu {cpu}, memory {memory} MiB -> cpu {chosen[0]:g}, memory {chosen[1]} MiB"
+        )
+    infra["cpu"], infra["memory"] = chosen
+    return infra, notes
+
+
+AWS = ProviderConfig(
+    name="aws",
+    terraform_dir=REPO_ROOT / "infra" / "terraform" / "aws",
+    terraform_dir_env=("PROVISIONING_TF_DIR_AWS",),
+    known_variables=frozenset(
+        {
+            "region",
+            "service_name",
+            "source_image",
+            "container_image",
+            "container_port",
+            "cpu",
+            "memory",
+            "health_check_path",
+            "env_vars",
+            "secret_refs",
+            "db_version",
+            "db_name",
+        }
+    ),
+    default_region="ap-northeast-2",
+    # AWS 는 '계정' 단위. 자원이 만들어질 계정은 실행 환경의 로그인이 정하고, 이 값은 로그인이 맞는 계정인지 확인하는 데 쓰인다.
+    # 그래서 GCP·Azure 와 같이 필수로 둔다 (이 컴퓨터의 기본 AWS 프로필이 다른 서비스 계정일 수 있다).
+    scope_variable="aws_account_id",
+    scope_env="AWS_ACCOUNT_ID",
+    scope_label="AWS 계정 ID",
+    adapt=aws_adapt,
+)
+
+PROVIDERS: dict[str, ProviderConfig] = {GCP.name: GCP, AZURE.name: AZURE, AWS.name: AWS}
 
 
 def get_provider(name: str) -> ProviderConfig:

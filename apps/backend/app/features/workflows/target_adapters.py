@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Mapping
 from typing import Any, Protocol
 
@@ -135,9 +136,86 @@ class AzureTargetAdapter:
         return provisioning_service.deploy_app(inp, ctx)
 
 
+# ap-northeast-2, us-east-1, us-gov-west-1 처럼 AWS 리전 이름 모양
+_AWS_REGION = re.compile(r"^[a-z]{2}(?:-[a-z]+)+-\d+$")
+
+
+def _aws_infra(target_infra: dict[str, Any], config: TargetInfraConfig | None) -> tuple[dict[str, Any], str | None]:
+    """조사 결과에 요청의 AWS 값을 얹는다: 리전은 요청 값이 우선이다.
+
+    요청에 리전이 없으면 MigrationRequest.target_region 의 기본값(asia-northeast3, GCP 리전)이 그대로 오는데, 그 값으로는
+    AWS Terraform 이 실패한다. AWS 리전 모양이 아니면 리전을 빼서 AWS 설정 카드의 기본 리전을 쓰게 하고, 뺀 값을 함께 돌려준다.
+    """
+    infra = dict(target_infra)
+    if config is not None and config.region:
+        infra["region"] = config.region
+    region = infra.get("region")
+    if region and not _AWS_REGION.match(str(region)):
+        del infra["region"]
+        return infra, str(region)
+    return infra, None
+
+
+def _say_region_dropped(ctx: RunContext, dropped: str | None) -> None:
+    if dropped:
+        ctx.report("running", 1, message=f"'{dropped}' 는 AWS 리전이 아니라 기본 리전(ap-northeast-2)을 씁니다")
+
+
+class AwsTargetAdapter:
+    """ECS Fargate + ALB + RDS PostgreSQL (infra/terraform/aws).
+
+    계정 ID 는 요청의 project_id, 없으면 환경변수 AWS_ACCOUNT_ID 를 씁니다. 둘 다 없으면 시작하지 않습니다.
+    어느 계정에 만들지는 백엔드를 실행하는 환경의 AWS 로그인(환경변수, AWS_PROFILE)이 정하고,
+    계정 ID 는 그 로그인이 맞는 계정인지 확인하는 데 쓰입니다 (다르면 Terraform 이 거부합니다).
+    앱 크기(cpu/memory)는 provisioning 이 Fargate 규칙에 맞춰 바꾸고, DB 등급은 넘기지 않습니다.
+    """
+
+    provider: TargetInfraType = "aws"
+
+    def provision(
+        self, run_id: str, target_infra: dict[str, Any], config: TargetInfraConfig | None, ctx: RunContext
+    ) -> Any:
+        from app.features.provisioning import service as provisioning_service
+        from app.features.provisioning.schemas import ProvisioningInput
+
+        infra, dropped = _aws_infra(target_infra, config)
+        _say_region_dropped(ctx, dropped)
+        inp = ProvisioningInput(
+            run_id=run_id,
+            target_infra=infra,
+            provider=self.provider,
+            project_id=_project_id(config),
+        )
+        return provisioning_service.run(inp, ctx)
+
+    def deploy_app(
+        self,
+        run_id: str,
+        target_infra: dict[str, Any],
+        config: TargetInfraConfig | None,
+        ctx: RunContext,
+        source_credentials_ref: str | None = None,
+    ) -> Any:
+        from app.features.provisioning import service as provisioning_service
+        from app.features.provisioning.schemas import AppDeployInput
+
+        infra, dropped = _aws_infra(target_infra, config)
+        _say_region_dropped(ctx, dropped)
+        inp = AppDeployInput(
+            run_id=run_id,
+            target_infra=infra,
+            provider=self.provider,
+            project_id=_project_id(config),
+            source_credentials_ref=source_credentials_ref,
+            update_worker_target=bool(os.environ.get("WORKER_URL")),
+        )
+        return provisioning_service.deploy_app(inp, ctx)
+
+
 TARGET_ADAPTERS: Mapping[TargetInfraType, TargetAdapter] = {
     "gcp": GcpTargetAdapter(),
     "azure": AzureTargetAdapter(),
+    "aws": AwsTargetAdapter(),
 }
 
 
