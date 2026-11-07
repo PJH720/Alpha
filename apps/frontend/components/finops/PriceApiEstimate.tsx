@@ -73,7 +73,7 @@ function arbitrageStatus(arb: ArbitrageResult): string {
  * 슬라이더(RPS, 유휴율, 응답 지연)와 실제 run 의 replication_lag_bytes 를
  * 백엔드 가격 API 단가 앵커(fargate_app_monthly_usd, cloud_run_instance_monthly_usd, egress_usd_per_gb)에 결합합니다.
  */
-function deriveLiveView(
+export function deriveLiveView(
   base: FinopsEstimate,
   params?: FinOpsInputParams,
   replicationLagBytes?: number | null,
