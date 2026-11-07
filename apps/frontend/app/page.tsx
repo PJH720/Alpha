@@ -201,9 +201,9 @@ export default function HomePage() {
               }
               className={`${INPUT} mt-1 font-mono text-xs`}
             />
-            <p className="mt-1 text-xs text-ink/50">
+            <p className="mt-1 min-h-[1.25rem] text-xs text-ink/50">
               {form.target_preset === "aws"
-                ? "비워둘 시 환경변수를 사용하며, 없을 경우 이전 시작 전 중단됩니다."
+                ? "비워둘 시 백엔드 환경변수를 사용하며, 값과 환경변수가 모두 없으면 시작 전 오류('AWS 계정 ID가 없습니다')로 중단됩니다."
                 : "비워둘 시 백엔드 기본 환경변수를 사용합니다."}
             </p>
           </div>

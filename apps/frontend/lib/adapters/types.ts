@@ -50,7 +50,7 @@ export const AwsTargetAdapter: TargetInfraAdapter = {
   label: "AWS Asia Pacific (Seoul) (ECS Fargate + RDS)",
   cloudName: "AWS",
   defaultRegion: "ap-northeast-2",
-  isAvailable: false, // #81 백엔드 AWS 테라폼 PR 머지 전까지 비활성화
+  isAvailable: false, // 백엔드 AWS 테라폼 PR 머지 전까지 비활성화 유지
   toConfig: toConfigFor("aws"),
 };
 

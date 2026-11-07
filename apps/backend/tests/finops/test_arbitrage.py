@@ -9,6 +9,8 @@
 import pytest
 from fastapi.testclient import TestClient
 
+from pydantic import ValidationError
+
 from app.features.finops import arbitrage
 from app.features.finops.schemas import ArbitrageRequest, CostRequest, Traffic
 from app.main import app
@@ -154,4 +156,33 @@ def test_estimate_includes_arbitrage_when_traffic_present():
     assert data["arbitrage"] is not None
     assert data["arbitrage"]["read_weight_target"] == 1.0
     assert data["arbitrage"]["write_destination"] == "SOURCE"
+
+
+def test_arbitrage_zero_rps_returns_zero_savings():
+    """트래픽이 없는 유휴 상태(RPS 0)에서는 절감액 0과 IDLE 상태를 반환합니다."""
+    req = ArbitrageRequest(rps=0.0, idle_percent=70.0)
+    res = arbitrage.calculate_arbitrage(req)
+    assert res.read_weight_target == 0.0
+    assert res.read_weight_source == 1.0
+    assert res.monthly_savings == 0.0
+    assert res.savings_percent == 0.0
+    assert "IDLE" in res.recommendation
+
+
+def test_arbitrage_crossover_rps_is_independent_of_input_rps():
+    """해석적 Crossover RPS는 입력 RPS에 따라 왜곡되지 않고 일관된 변곡점을 제공합니다."""
+    res1 = arbitrage.calculate_arbitrage(ArbitrageRequest(rps=2.0, idle_percent=70.0, avg_latency_ms=100.0))
+    res2 = arbitrage.calculate_arbitrage(ArbitrageRequest(rps=20.0, idle_percent=70.0, avg_latency_ms=100.0))
+    assert res1.crossover_rps is not None
+    assert res1.crossover_rps == res2.crossover_rps
+
+
+def test_arbitrage_rejects_infinite_custom_fx():
+    """custom_fx_rate 에 무한대나 음수, 0이 들어가면 Pydantic ValidationError 로 차단됩니다."""
+    with pytest.raises(ValidationError):
+        ArbitrageRequest(custom_fx_rate=float("inf"))
+    with pytest.raises(ValidationError):
+        ArbitrageRequest(custom_fx_rate=-1.0)
+    with pytest.raises(ValidationError):
+        ArbitrageRequest(custom_fx_rate=0.0)
 

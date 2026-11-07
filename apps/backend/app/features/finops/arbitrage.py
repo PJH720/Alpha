@@ -103,7 +103,15 @@ def calculate_arbitrage(
     # Fargate 읽기 담당 추정 몫
     fargate_read_portion_usd = baseline_fargate_app_usd * req.read_ratio
 
-    if lag_fenced:
+    if read_rps <= 0:
+        read_weight_target = 0.0
+        read_weight_source = 1.0
+        monthly_savings_usd = 0.0
+        savings_pct = 0.0
+        arbitrage_monthly_cost_usd = baseline_fargate_app_usd
+        recommendation = "IDLE: 활성 요청(RPS=0)이 없어 차익거래 대상이 없습니다."
+        reasons.append("유휴 상태(RPS 0)에서는 상시 인스턴스 기본 비용이 유지되며 차익거래 우회가 불필요합니다.")
+    elif lag_fenced:
         read_weight_target = 0.0
         read_weight_source = 1.0
         monthly_savings_usd = 0.0
@@ -137,14 +145,21 @@ def calculate_arbitrage(
         reasons.append("고밀도 트래픽 또는 Egress 요금으로 인해 Scale-to-Zero 전환 이점이 상쇄되었습니다.")
 
     reasons.append("쓰기 트래픽(Write)은 데이터 정합성 보장을 위해 Active Master로 100% 펜싱됩니다.")
+    reasons.append(
+        f"세션 일관성(Read-After-Write): 쓰기를 수행한 클라이언트는 {req.read_after_write_fence_sec:g}초간 "
+        f"마스터로 고정(Sticky)되어 쓰기 직후 읽기 복제 지연을 방지합니다."
+    )
 
-    # 변곡점 RPS 추정 (Cloud Run 비용 + Egress 비용 == Fargate 비용)
+    # 변곡점 RPS 분석 (입력 RPS와 무관한 해석적 폐쇄형 계산: Cloud Run 비용 == Fargate 비용 지점)
     crossover_rps = None
-    if req.avg_latency_ms > 0:
-        # 대략적 Crossover RPS 도출
-        crossover_rps = round(
-            (baseline_fargate_app_usd / (target_app_cost_usd / max(read_rps, 0.1))) * read_rps, 1
-        ) if target_app_cost_usd > 0 else None
+    if active_seconds > 0 and req.avg_latency_ms > 0 and req.read_ratio > 0:
+        compute_cost_per_sec = (req.app_vcpu * CLOUD_RUN_VCPU_SEC_DEFAULT + gib * CLOUD_RUN_MEM_GIB_SEC_DEFAULT)
+        compute_cost_per_req = (req.avg_latency_ms / 1000.0) * compute_cost_per_sec
+        req_cost_per_req = CLOUD_RUN_REQ_PER_MILLION_DEFAULT / 1_000_000.0
+        egress_cost_per_req = (req.avg_response_kb / (1024.0 * 1024.0)) * EGRESS_COST_PER_GB_USD
+        total_variable_cost_per_req = compute_cost_per_req + req_cost_per_req + egress_cost_per_req
+        if total_variable_cost_per_req > 0:
+            crossover_rps = round(baseline_fargate_app_usd / (active_seconds * total_variable_cost_per_req), 1)
 
     return ArbitrageResult(
         read_weight_target=round(read_weight_target, 2),

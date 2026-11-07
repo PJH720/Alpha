@@ -21,6 +21,8 @@ const initialState = () => ({
     enabled: false,
     read_target_weight: 0.0,
     max_lag_bytes: 1024,
+    current_lag_bytes: 0,
+    lag_updated_at: null,
   },
 });
 
@@ -107,13 +109,16 @@ export class Gate extends DurableObject {
     // 차익거래 라우팅: 모드가 SOURCE일 때, 쓰기가 아닌 읽기 요청이고
     // 복제 지연이 허용 임계치 이내이면 Cloud Run(TARGET)으로 가중치 기반 라우팅
     const arb = this.state.arbitrage;
-    if (
-      this.state.mode === "SOURCE" &&
-      arb?.enabled &&
-      !isWrite &&
-      (lagBytes === null || isNaN(lagBytes) || lagBytes <= (arb.max_lag_bytes ?? 1024))
-    ) {
-      if (Math.random() < (arb.read_target_weight ?? 0.0)) {
+    if (this.state.mode === "SOURCE" && arb?.enabled && !isWrite) {
+      // 복제 지연 세이프가드: 제어 평면(CDC)의 측정 지연과 클라이언트 헤더 중 보수적인(큰) 값 선택
+      const controlLag = arb.current_lag_bytes ?? null;
+      const clientLag = lagBytes !== null && !isNaN(lagBytes) ? lagBytes : null;
+      const effectiveLag = clientLag !== null && controlLag !== null ? Math.max(controlLag, clientLag) : controlLag;
+      const maxLag = arb.max_lag_bytes ?? 1024;
+
+      // Fail-closed: 지연 상태를 알 수 없거나 임계치를 초과하면 절대 우회하지 않고 SOURCE(마스터)로 펜싱
+      const safe = effectiveLag !== null && effectiveLag <= maxLag;
+      if (safe && Math.random() < (arb.read_target_weight ?? 0.0)) {
         origin = "TARGET";
         viaArbitrage = true;
       }
@@ -197,12 +202,21 @@ export class Gate extends DurableObject {
   }
 
   // 동적 차익거래(Arbitrage) 정책 설정 및 조회
-  async setArbitrage({ enabled, read_target_weight, max_lag_bytes }) {
+  async setArbitrage(body = {}) {
     await this.expireHold();
+    const enabled = typeof body.enabled === "boolean" ? body.enabled : body.enabled === "true";
+    const readWeight = Math.max(0.0, Math.min(1.0, Number(body.read_target_weight) || 0.0));
+    const maxLag = Number.isFinite(Number(body.max_lag_bytes)) ? Math.max(0, Number(body.max_lag_bytes)) : 1024;
+    const currentLag = Number.isFinite(Number(body.current_lag_bytes))
+      ? Math.max(0, Number(body.current_lag_bytes))
+      : (this.state.arbitrage?.current_lag_bytes ?? 0);
+
     this.state.arbitrage = {
-      enabled: Boolean(enabled),
-      read_target_weight: Math.max(0.0, Math.min(1.0, Number(read_target_weight) || 0.0)),
-      max_lag_bytes: Math.max(0, Number(max_lag_bytes) || 1024),
+      enabled,
+      read_target_weight: readWeight,
+      max_lag_bytes: maxLag,
+      current_lag_bytes: currentLag,
+      lag_updated_at: iso(),
     };
     this.state.updated_at = iso();
     await this.save();
@@ -210,7 +224,15 @@ export class Gate extends DurableObject {
   }
 
   async getArbitrage() {
-    return ok(this.state.arbitrage ?? { enabled: false, read_target_weight: 0.0, max_lag_bytes: 1024 });
+    return ok(
+      this.state.arbitrage ?? {
+        enabled: false,
+        read_target_weight: 0.0,
+        max_lag_bytes: 1024,
+        current_lag_bytes: 0,
+        lag_updated_at: null,
+      }
+    );
   }
 
 // reset: 규격에는 없는 보조 기능. 처음 상태(SOURCE)로 되돌림

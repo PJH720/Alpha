@@ -143,7 +143,7 @@ function ArbitrageTile({ arb }: { arb: ArbitrageResult }) {
         >
           <span className={`inline-block h-2 w-2 rounded-full ${arb.lag_fenced ? "bg-amber-500" : "bg-emerald-600"}`} />
           <span className="font-semibold">복제 세이프가드:</span>
-          <span>{arb.lag_fenced ? "지연 초과로 차익거래 차단 (100% 원본 펜싱)" : "정상 복제 (< 1KB) 가동 중"}</span>
+          <span>{arb.lag_fenced ? "지연 초과로 차익거래 차단 (100% 원본 펜싱)" : "지연 임계치 세이프가드 (< 1KB 연동)"}</span>
         </div>
       </div>
 

@@ -210,18 +210,19 @@ class ArbitrageRequest(BaseModel):
 
     source_cloud: str = Field(default=SOURCE_CLOUD, pattern=CLOUD_SLUG)
     target_cloud: str = Field(default="gcp", pattern=CLOUD_SLUG)
-    app_vcpu: float = Field(default=0.5, gt=0, le=MAX_APP_VCPU)
+    app_vcpu: float = Field(default=0.5, gt=0, le=MAX_APP_VCPU, allow_inf_nan=False)
     app_memory_mib: int = Field(default=1024, gt=0, le=MAX_APP_MEMORY_MIB)
     app_instances: int = Field(default=1, ge=1, le=MAX_APP_INSTANCES)
-    rps: float = Field(default=20.0, ge=0, le=100_000)
-    read_ratio: float = Field(default=0.8, ge=0.0, le=1.0)  # 읽기 트래픽 비율 (0~100%)
-    idle_percent: float = Field(default=40.0, ge=0.0, le=95.0)
-    avg_latency_ms: float = Field(default=150.0, gt=0, le=60_000)
-    avg_response_kb: float = Field(default=4.0, gt=0, le=10_000)
+    rps: float = Field(default=20.0, ge=0, le=100_000, allow_inf_nan=False)
+    read_ratio: float = Field(default=0.8, ge=0.0, le=1.0, allow_inf_nan=False)  # 읽기 트래픽 비율 (0~100%)
+    idle_percent: float = Field(default=40.0, ge=0.0, le=95.0, allow_inf_nan=False)
+    avg_latency_ms: float = Field(default=150.0, gt=0, le=60_000, allow_inf_nan=False)
+    avg_response_kb: float = Field(default=4.0, gt=0, le=10_000, allow_inf_nan=False)
     replication_lag_bytes: int | None = Field(default=0, ge=0)
     max_safe_lag_bytes: int = Field(default=1024, ge=0)
+    read_after_write_fence_sec: float = Field(default=5.0, ge=0.0, le=300.0, allow_inf_nan=False)
     currency: str = Field(default="USD", pattern=r"^(USD|JPY|KRW)$")
-    custom_fx_rate: float | None = Field(default=None, gt=0)
+    custom_fx_rate: float | None = Field(default=None, gt=0, le=10_000_000, allow_inf_nan=False)
 
 
 class ArbitrageResult(BaseModel):

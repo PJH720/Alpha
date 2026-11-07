@@ -294,8 +294,8 @@ await check("arbitrage: 동적 차익거래 설정, 읽기 우회, 쓰기 마스
   assert.equal(init.status, 200);
   assert.equal(init.body.enabled, false);
 
-  // 2. 차익거래 활성화 (읽기 100% TARGET 우회, 복제 지연 임계치 1024B)
-  const setRes = await control("arbitrage", { enabled: true, read_target_weight: 1.0, max_lag_bytes: 1024 });
+  // 2. 차익거래 활성화 (문자열 'true' 입력 및 current_lag_bytes: 0)
+  const setRes = await control("arbitrage", { enabled: "true", read_target_weight: 1.0, max_lag_bytes: 1024, current_lag_bytes: 0 });
   assert.equal(setRes.status, 200);
   assert.equal(setRes.body.enabled, true);
   assert.equal(setRes.body.read_target_weight, 1.0);
@@ -310,12 +310,24 @@ await check("arbitrage: 동적 차익거래 설정, 읽기 우회, 쓰기 마스
   assert.equal(writeRes.headers.get("x-gate-origin"), "SOURCE");
   assert.equal(writeRes.headers.get("x-arbitrage"), null);
 
-  // 5. 복제 지연 세이프가드: 복제 지연이 1024B를 넘으면 읽기 요청도 SOURCE로 강제 회귀
-  const laggedReadRes = await fetch(BASE + "/", {
+  // 5. 복제 지연 세이프가드 (Fail-Closed):
+  // 5-1. 제어 평면의 CDC lag가 1024B를 넘으면 즉시 SOURCE로 펜싱
+  await control("arbitrage", { enabled: true, read_target_weight: 1.0, max_lag_bytes: 1024, current_lag_bytes: 4096 });
+  const laggedControlRead = await fetch(BASE + "/");
+  assert.equal(laggedControlRead.headers.get("x-gate-origin"), "SOURCE");
+  assert.equal(laggedControlRead.headers.get("x-arbitrage"), null);
+
+  // 5-2. 제어 평면 lag가 정상이더라도 클라이언트가 보고한 지연이 크면 보수적으로 SOURCE로 펜싱
+  await control("arbitrage", { enabled: true, read_target_weight: 1.0, max_lag_bytes: 1024, current_lag_bytes: 100 });
+  const laggedClientRead = await fetch(BASE + "/", {
     headers: { "X-Replication-Lag-Bytes": "2048" },
   });
-  assert.equal(laggedReadRes.headers.get("x-gate-origin"), "SOURCE");
-  assert.equal(laggedReadRes.headers.get("x-arbitrage"), null);
+  assert.equal(laggedClientRead.headers.get("x-gate-origin"), "SOURCE");
+  assert.equal(laggedClientRead.headers.get("x-arbitrage"), null);
+
+  // 6. enabled: "false" 입력 시 확실히 비활성화되는지 검증
+  await control("arbitrage", { enabled: "false" });
+  assert.equal((await control("arbitrage")).body.enabled, false);
 });
 
 await control("reset", {});
