@@ -127,8 +127,12 @@ export default {
     const isWrite = !READ_METHODS.has(request.method);
     const lagHeader = request.headers.get("X-Replication-Lag-Bytes");
     const lagBytes = lagHeader ? parseInt(lagHeader, 10) : null;
+    const clientIp =
+      request.headers.get("CF-Connecting-IP") ||
+      request.headers.get("X-Forwarded-For")?.split(",")[0]?.trim() ||
+      "default";
     let isFailure = true; // 원본 응답을 받기 전에 끝나면 실패로 센다
-    const { origin, ticket, target, viaArbitrage, viaQuarantine } = await gate.enter({ isWrite, lagBytes });
+    const { origin, ticket, target, viaArbitrage, viaQuarantine } = await gate.enter({ isWrite, lagBytes, clientIp });
     try {
       // TARGET 이면 제어 명령으로 정한 주소(target)를 먼저 쓰고, 없으면 설정값 UPSTREAM_TARGET 을 쓴다
       const base = origin === "TARGET" ? target || env.UPSTREAM_TARGET : env.UPSTREAM_SOURCE;
