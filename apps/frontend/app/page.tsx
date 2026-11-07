@@ -41,7 +41,6 @@ const INITIAL: FormState = {
   rds_instance_id: "",
   db_credentials_ref: "",
   target_region: "",
-  target_project_id: "",
   github_repo_url: "",
 };
 
