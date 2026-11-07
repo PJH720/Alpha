@@ -192,3 +192,54 @@ class FinopsEstimate(BaseModel):
 
     input: FinopsInput
     report: FinopsReport
+    arbitrage: ArbitrageResult | None = None
+
+
+# -- 비용 변동성 및 동적 차익거래 (Dynamic Cost-Arbitrage Routing) --------------------------
+# 소프트뱅크 인프라 비용 변동성 대응: 읽기/쓰기 분리 차익거래, 환율 반영, 복제 지연 펜싱
+
+DEFAULT_FX_RATES: dict[str, float] = {
+    "USD": 1.0,
+    "JPY": 154.5,
+    "KRW": 1420.0,
+}
+
+
+class ArbitrageRequest(BaseModel):
+    """동적 트래픽 차익거래 계산 입력."""
+
+    source_cloud: str = Field(default=SOURCE_CLOUD, pattern=CLOUD_SLUG)
+    target_cloud: str = Field(default="gcp", pattern=CLOUD_SLUG)
+    app_vcpu: float = Field(default=0.5, gt=0, le=MAX_APP_VCPU)
+    app_memory_mib: int = Field(default=1024, gt=0, le=MAX_APP_MEMORY_MIB)
+    app_instances: int = Field(default=1, ge=1, le=MAX_APP_INSTANCES)
+    rps: float = Field(default=20.0, ge=0, le=100_000)
+    read_ratio: float = Field(default=0.8, ge=0.0, le=1.0)  # 읽기 트래픽 비율 (0~100%)
+    idle_percent: float = Field(default=40.0, ge=0.0, le=95.0)
+    avg_latency_ms: float = Field(default=150.0, gt=0, le=60_000)
+    avg_response_kb: float = Field(default=4.0, gt=0, le=10_000)
+    replication_lag_bytes: int | None = Field(default=0, ge=0)
+    max_safe_lag_bytes: int = Field(default=1024, ge=0)
+    currency: str = Field(default="USD", pattern=r"^(USD|JPY|KRW)$")
+    custom_fx_rate: float | None = Field(default=None, gt=0)
+
+
+class ArbitrageResult(BaseModel):
+    """동적 트래픽 차익거래 결과 및 추천 가중치."""
+
+    read_weight_target: float  # 목적지로 보낼 읽기 트래픽 비율 (0.0 ~ 1.0)
+    read_weight_source: float  # 원본으로 유지할 읽기 트래픽 비율 (0.0 ~ 1.0)
+    write_destination: str  # 쓰기 트래픽 처리 대상 ("SOURCE" - 항상 액티브 마스터)
+    active_master: str  # 액티브 마스터 클라우드 ("SOURCE")
+    lag_fenced: bool  # 복제 지연 초과로 읽기 우회가 차단되었는지 여부
+    baseline_monthly_cost: float  # 차익거래 없이 100% 원본 가동 시 월 비용
+    arbitrage_monthly_cost: float  # 동적 차익거래 적용 시 월 비용
+    monthly_savings: float  # 절감액
+    savings_percent: float  # 절감률 (%)
+    cross_cloud_egress_monthly_usd: float  # 크로스 클라우드 네트워크 Egress 요금 (USD)
+    currency: str  # 통화 코드
+    fx_rate: float  # 적용 환율
+    crossover_rps: float | None = None  # 전체 전환 변곡점 RPS
+    recommendation: str  # 운영 권고
+    reasons: list[str]  # 상세 근거 및 제약 사항
+

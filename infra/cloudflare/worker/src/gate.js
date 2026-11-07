@@ -17,6 +17,11 @@ const initialState = () => ({
   updated_at: null,
   max_hold_ms: DEFAULT_MAX_HOLD_MS,
   target_url: null, // 제어 명령(target)으로 정한 GCP 쪽 원본 주소. null 이면 설정값 UPSTREAM_TARGET 을 쓴다
+  arbitrage: {
+    enabled: false,
+    read_target_weight: 0.0,
+    max_lag_bytes: 1024,
+  },
 });
 
 // 요청 집계. 저장하지 않으므로 객체가 다시 뜨면 since 가 새 시각이 되어 호출 쪽이 알아챌 수 있다.
@@ -77,7 +82,7 @@ export class Gate extends DurableObject {
   }
 
   // enter: 요청이 들어왔을 때 부른다. "보류 중"이면 붙잡아 두고, 풀리면 어디로 갈지(origin)를 돌려줌.
-  async enter() {
+  async enter({ isWrite = false, lagBytes = null } = {}) {
     await this.expireHold();
 
     if (this.state.mode === "HOLD") {
@@ -96,11 +101,28 @@ export class Gate extends DurableObject {
       }
     }
 
-    const origin = this.state.mode;
+    let origin = this.state.mode;
+    let viaArbitrage = false;
+
+    // 차익거래 라우팅: 모드가 SOURCE일 때, 쓰기가 아닌 읽기 요청이고
+    // 복제 지연이 허용 임계치 이내이면 Cloud Run(TARGET)으로 가중치 기반 라우팅
+    const arb = this.state.arbitrage;
+    if (
+      this.state.mode === "SOURCE" &&
+      arb?.enabled &&
+      !isWrite &&
+      (lagBytes === null || isNaN(lagBytes) || lagBytes <= (arb.max_lag_bytes ?? 1024))
+    ) {
+      if (Math.random() < (arb.read_target_weight ?? 0.0)) {
+        origin = "TARGET";
+        viaArbitrage = true;
+      }
+    }
+
     const ticket = ++this.seq;
     this.tickets.set(ticket, { origin, startedAt: Date.now() });
     // target: 제어 명령으로 정한 GCP 쪽 주소 (없으면 null). 예전에 저장된 상태에는 이 칸이 없어서 ?? 로 맞춘다
-    return { origin, ticket, target: this.state.target_url ?? null };
+    return { origin, ticket, target: this.state.target_url ?? null, viaArbitrage };
   }
 
   // exit: 요청이 원본에서 응답을 받아 끝났을 때 부른다. "처리 중" 명단에서 번호표를 지우고 결과를 센다.
@@ -172,6 +194,23 @@ export class Gate extends DurableObject {
 
   async getTarget() {
     return ok({ url: this.state.target_url ?? null });
+  }
+
+  // 동적 차익거래(Arbitrage) 정책 설정 및 조회
+  async setArbitrage({ enabled, read_target_weight, max_lag_bytes }) {
+    await this.expireHold();
+    this.state.arbitrage = {
+      enabled: Boolean(enabled),
+      read_target_weight: Math.max(0.0, Math.min(1.0, Number(read_target_weight) || 0.0)),
+      max_lag_bytes: Math.max(0, Number(max_lag_bytes) || 1024),
+    };
+    this.state.updated_at = iso();
+    await this.save();
+    return ok(this.state.arbitrage);
+  }
+
+  async getArbitrage() {
+    return ok(this.state.arbitrage ?? { enabled: false, read_target_weight: 0.0, max_lag_bytes: 1024 });
   }
 
 // reset: 규격에는 없는 보조 기능. 처음 상태(SOURCE)로 되돌림

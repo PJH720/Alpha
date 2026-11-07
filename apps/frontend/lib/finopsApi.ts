@@ -37,9 +37,28 @@ export interface Crossover {
   reason: string | null;
 }
 
+export interface ArbitrageResult {
+  read_weight_target: number;
+  read_weight_source: number;
+  write_destination: string;
+  active_master: string;
+  lag_fenced: boolean;
+  baseline_monthly_cost: number;
+  arbitrage_monthly_cost: number;
+  monthly_savings: number;
+  savings_percent: number;
+  cross_cloud_egress_monthly_usd: number;
+  currency: string;
+  fx_rate: number;
+  crossover_rps: number | null;
+  recommendation: string;
+  reasons: string[];
+}
+
 export interface FinopsEstimate {
   input: { current: CloudCost; candidates: CloudCost[]; assumptions: string[]; crossover: Crossover | null };
   report: { savings: Saving[]; best: string | null; summary: string[]; notes: string[]; summary_source: "rules" | "ai" };
+  arbitrage?: ArbitrageResult | null;
 }
 
 /** 가격 API 로 비교할 후보. 단가를 받는 리전은 서울 두 곳입니다. */

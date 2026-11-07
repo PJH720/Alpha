@@ -11,7 +11,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function control(path, body, { token = TOKEN } = {}) {
   const res = await fetch(`${BASE}/control/${path}`, {
-    method: body === undefined && (path === "status" || path === "target") ? "GET" : "POST",
+    method: body === undefined && (path === "status" || path === "target" || path === "arbitrage") ? "GET" : "POST",
     headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
@@ -285,6 +285,37 @@ await check("request_counts: 원본에 닿지 못하면 실패로 센다", async
   const { request_counts: counts } = (await control("status")).body;
   assert.equal(counts.write_total, 1);
   assert.equal(counts.write_failed, 1);
+});
+
+await check("arbitrage: 동적 차익거래 설정, 읽기 우회, 쓰기 마스터 펜싱, 복제 지연 세이프가드", async () => {
+  await control("reset", {});
+  // 1. 기본 상태 조회
+  const init = await control("arbitrage");
+  assert.equal(init.status, 200);
+  assert.equal(init.body.enabled, false);
+
+  // 2. 차익거래 활성화 (읽기 100% TARGET 우회, 복제 지연 임계치 1024B)
+  const setRes = await control("arbitrage", { enabled: true, read_target_weight: 1.0, max_lag_bytes: 1024 });
+  assert.equal(setRes.status, 200);
+  assert.equal(setRes.body.enabled, true);
+  assert.equal(setRes.body.read_target_weight, 1.0);
+
+  // 3. 읽기 요청: TARGET으로 우회되고 X-Arbitrage 헤더 부여
+  const readRes = await fetch(BASE + "/");
+  assert.equal(readRes.headers.get("x-gate-origin"), "TARGET");
+  assert.equal(readRes.headers.get("x-arbitrage"), "true");
+
+  // 4. 쓰기 요청: 읽기 우회가 켜져 있어도 항상 SOURCE(마스터)로 100% 펜싱
+  const writeRes = await fetch(BASE + "/", { method: "POST", body: "{}" });
+  assert.equal(writeRes.headers.get("x-gate-origin"), "SOURCE");
+  assert.equal(writeRes.headers.get("x-arbitrage"), null);
+
+  // 5. 복제 지연 세이프가드: 복제 지연이 1024B를 넘으면 읽기 요청도 SOURCE로 강제 회귀
+  const laggedReadRes = await fetch(BASE + "/", {
+    headers: { "X-Replication-Lag-Bytes": "2048" },
+  });
+  assert.equal(laggedReadRes.headers.get("x-gate-origin"), "SOURCE");
+  assert.equal(laggedReadRes.headers.get("x-arbitrage"), null);
 });
 
 await control("reset", {});
