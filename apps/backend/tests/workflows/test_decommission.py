@@ -98,6 +98,21 @@ def test_decommission_records_operator(http_with):
     assert "admin-pj" in res.json()["cleanup_message"]
 
 
+def test_decommission_is_refused_when_worker_is_not_target(http_with, monkeypatch):
+    from app.features.provisioning.worker_client import WorkerClient
+
+    class FakeWorker:
+        def status(self):
+            return {"mode": "SOURCE"}
+
+    monkeypatch.setattr(WorkerClient, "from_env", lambda: FakeWorker())
+    http = http_with(lambda r: "정리 완료")
+    run_id = _succeeded_run(http)
+    res = http.post(f"/runs/{run_id}/decommission")
+    assert res.status_code == 409
+    assert "TARGET" in res.json()["detail"]
+
+
 # -- runners.decommission_cdc: db_workflow.finish 결과를 문장으로 --------------------------------------
 
 
