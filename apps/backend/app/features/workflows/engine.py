@@ -44,6 +44,8 @@ logger = logging.getLogger(__name__)
 StageRunner = Callable[[RunStatus, RunContext], BaseModel | dict[str, Any]]
 # 중단된 run 이 남긴 외부 자원을 정리합니다. 정리할 것이 없으면 False, 실패하면 예외입니다. 다시 불러도 안전해야 합니다.
 AbortCleanup = Callable[[RunStatus], bool]
+# 전환이 끝난 run 의 이전 자원 정리. 끝나면 사람에게 보일 문장을 돌려주고, 남은 것이 있으면 예외를 냅니다.
+Decommission = Callable[[RunStatus], str]
 
 GATE_LABEL: dict[Gate, str] = {"plan": "계획 승인 ①", "cutover": "전환 승인 ②"}
 
@@ -60,6 +62,10 @@ _CUTOVER_MANUAL_NOTE = "수동 확인 필요: 트래픽이 이미 목적지로 �
 CUTOVER_OUTCOME = "cutover_outcome"
 CUTOVER_ON_SOURCE = {"rolled_back", "not_started"}
 _CLEANUP_STARTED: dict[str, Any] = {"cleanup_state": "running", "cleanup_message": "복제 자원 정리 중"}
+_DECOMMISSION_STARTED: dict[str, Any] = {
+    "cleanup_state": "running",
+    "cleanup_message": "이전 자원 정리 중 (복제 작업 종료, VPN 삭제)",
+}
 
 
 class InvalidTransition(Exception):
@@ -100,10 +106,12 @@ class Engine:
         store: RunStore,
         runners: Mapping[StageName, StageRunner] | None = None,
         abort_cleanup: AbortCleanup | None = None,
+        decommission: Decommission | None = None,
     ) -> None:
         self._store = store
         self._runners = dict(runners or {})
         self._abort_cleanup = abort_cleanup
+        self._decommission = decommission
 
     # -- 조회 ---------------------------------------------------------------
 
@@ -224,6 +232,40 @@ class Engine:
             self._finish_cleanup(run_id, "done", "복제 자원 정리 완료")
         else:
             self._finish_cleanup(run_id, None, None)
+
+    def start_decommission(self, run_id: str) -> RunStatus:
+        """전환이 끝난 run 의 이전 자원(복제 작업, VPN) 정리를 시작으로 표시합니다. 이어서 run_decommission() 을 부릅니다.
+
+        사람이 누릅니다. 복제를 닫으면 원본으로 되돌아갈 길이 없어지므로 자동으로 하지 않습니다.
+        """
+
+        def change(run: RunStatus) -> RunStatus:
+            if self._decommission is None:
+                raise InvalidTransition("이전 자원 정리 기능이 연결되지 않았습니다")
+            if run.state != WorkflowState.SUCCEEDED:
+                raise InvalidTransition("전환까지 끝난 run 만 이전 자원을 정리합니다")
+            if run.cleanup_state in ("running", "done"):
+                raise InvalidTransition("이미 정리 중이거나 정리가 끝났습니다")
+            return run.model_copy(update=_DECOMMISSION_STARTED)
+
+        return self._store.update(run_id, change)
+
+    def run_decommission(self, run_id: str) -> None:
+        """백그라운드 작업. 실패는 기록하고 다시 누를 수 있게 둡니다. 이전 결과(succeeded)는 바꾸지 않습니다."""
+        if self._decommission is None:
+            return
+        run = self._store.get(run_id)
+        if run.state != WorkflowState.SUCCEEDED or run.cleanup_state != "running":
+            return
+        try:
+            message = self._decommission(run)
+        except Exception as exc:
+            logger.exception("decommission failed for run %s", run_id)
+            from .runners import scrub_sensitive_text
+            cleaned_err = scrub_sensitive_text(str(exc), fallback=type(exc).__name__)
+            self._finish_cleanup(run_id, "failed", f"이전 자원 정리 실패: {cleaned_err}"[:_MAX_ERROR_MESSAGE])
+            return
+        self._finish_cleanup(run_id, "done", message[:_MAX_ERROR_MESSAGE])
 
     def _finish_cleanup(self, run_id: str, state: CleanupState | None, message: str | None) -> None:
         # run.updated_at 은 상태가 바뀐 시각이므로 건드리지 않습니다.
