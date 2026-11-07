@@ -37,19 +37,23 @@ export interface Crossover {
   reason: string | null;
 }
 
+// 읽기 분산(차익거래) 결과. 비용 항목이 하나라도 미제공이면 비중·절감은 null 입니다.
+// 화면은 통화를 따로 요청하지 않으므로 금액은 USD 입니다 (환율을 화면에서 정하지 않음).
 export interface ArbitrageResult {
-  read_weight_target: number;
-  read_weight_source: number;
+  read_weight_target: number | null;
+  read_weight_source: number | null;
   write_destination: string;
   active_master: string;
   lag_fenced: boolean;
-  baseline_monthly_cost: number;
-  arbitrage_monthly_cost: number;
-  monthly_savings: number;
-  savings_percent: number;
-  cross_cloud_egress_monthly_usd: number;
+  baseline_monthly_cost: number | null;
+  arbitrage_monthly_cost: number | null;
+  monthly_savings: number | null;
+  savings_percent: number | null;
+  cross_cloud_egress_monthly_usd: number | null;
+  egress_usd_per_gb: number | null;
+  egress_source: string | null;
   currency: string;
-  fx_rate: number;
+  fx_rate: number | null;
   crossover_rps: number | null;
   recommendation: string;
   reasons: string[];
@@ -72,7 +76,11 @@ const DB_T3_VCPU = 2;
 const SOURCE_REGION_FALLBACK = "ap-northeast-2";
 
 /** 화면 입력값을 /finops/estimate 요청으로. 원본 앱 크기는 미제공이라 목적지 계획 크기를 씁니다 (화면에 "가정"). */
-export function estimateRequest(params: FinOpsInputParams, sourceRegion: string | undefined) {
+export function estimateRequest(
+  params: FinOpsInputParams,
+  sourceRegion: string | undefined,
+  replicationLagBytes?: number | null,
+) {
   const db = DB_CLASSES[params.dbClass];
   return {
     source_region: sourceRegion || SOURCE_REGION_FALLBACK,
@@ -84,7 +92,14 @@ export function estimateRequest(params: FinOpsInputParams, sourceRegion: string 
     db_memory_gib: db.memoryGb,
     db_storage_gb: params.dbSizeGb,
     candidates: ESTIMATE_CANDIDATES,
-    traffic: { idle_percent: params.idlePercent, rps: params.rps, avg_latency_ms: params.avgRequestMs },
+    traffic: {
+      idle_percent: params.idlePercent,
+      rps: params.rps,
+      avg_latency_ms: params.avgRequestMs,
+      ...(typeof replicationLagBytes === "number" && Number.isFinite(replicationLagBytes) && replicationLagBytes >= 0
+        ? { replication_lag_bytes: Math.round(replicationLagBytes) }
+        : {}),
+    },
   };
 }
 
