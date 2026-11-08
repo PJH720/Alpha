@@ -167,6 +167,9 @@ export function CloudKeysPage() {
   );
 }
 
+// 모든 클라우드 키를 같은 입력칸으로 받습니다. GCP 는 서비스 계정 키 JSON 전체를 붙여 넣습니다.
+const KEY_HINT: Record<string, string> = { credentials_json: "서비스 계정 키 JSON 전체를 붙여 넣기" };
+
 function CloudKeyForm({ status, hasVpn, onSaved }: { status: CloudStatus; hasVpn: boolean; onSaved: () => Promise<void> }) {
   const [values, setValues] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
@@ -204,12 +207,6 @@ function CloudKeyForm({ status, hasVpn, onSaved }: { status: CloudStatus; hasVpn
     }
   };
 
-  const readFile = async (key: string, file: File | undefined) => {
-    if (!file) return;
-    const text = await file.text();
-    setValues((v) => ({ ...v, [key]: text }));
-  };
-
   return (
     <section className="space-y-3 rounded-lg border border-ink/10 bg-white p-4 text-sm">
       <div className="flex items-baseline justify-between">
@@ -218,31 +215,19 @@ function CloudKeyForm({ status, hasVpn, onSaved }: { status: CloudStatus; hasVpn
           {status.registered ? "등록됨" : "미등록"}
         </span>
       </div>
-      {status.required_keys.map((key) =>
-        key === "credentials_json" ? (
-          <label key={key} className="block">
-            <span className="text-xs text-ink/60">{key} (서비스 계정 키 JSON 파일)</span>
-            <input
-              className="mt-1 block w-full text-xs"
-              type="file"
-              accept="application/json,.json"
-              onChange={(e) => void readFile(key, e.target.files?.[0])}
-            />
-            {values[key] && <span className="text-xs text-ink/50">파일을 읽었습니다 (내용은 표시하지 않음)</span>}
-          </label>
-        ) : (
-          <label key={key} className="block">
-            <span className="text-xs text-ink/60">{key}</span>
-            <input
-              className={INPUT}
-              type="password"
-              autoComplete="off"
-              value={values[key] ?? ""}
-              onChange={(e) => setValues((v) => ({ ...v, [key]: e.target.value }))}
-            />
-          </label>
-        ),
-      )}
+      {status.required_keys.map((key) => (
+        <label key={key} className="block">
+          <span className="text-xs text-ink/60">{key}</span>
+          <input
+            className={INPUT}
+            type="password"
+            autoComplete="off"
+            placeholder={KEY_HINT[key]}
+            value={values[key] ?? ""}
+            onChange={(e) => setValues((v) => ({ ...v, [key]: e.target.value }))}
+          />
+        </label>
+      ))}
       {note && <p className="text-ink/80">{note}</p>}
       <div className="flex flex-wrap gap-2">
         <button type="button" className={BUTTON_PRIMARY} disabled={busy || !complete} onClick={save}>
