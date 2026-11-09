@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 import re
 
 from . import targets
 from .app import PROVISIONING_INJECTED_ENV, has_secret_value, looks_secret
 from .schemas import (
+    SourceInfo,
     AppInfo,
     InventoryForPlanning,
     PlanCheck,
@@ -197,7 +199,44 @@ def run_checks(inv: InventoryForPlanning, target: TargetSelection | None = None)
             detail="원본 이미지 주소 미제공",
         ))
 
+    if inv.source is not None:
+        checks.append(source_executable_check(inv.source))
+
     return checks
+
+
+# 지금 workflows → db_migration.execute(기존 입력 계약, SourceInput)이 받는 원본은 AWS 뿐입니다. VPC 대역과 라우트 테이블이
+# 필수라서 GCP·Azure·온프레미스 원본은 조사·계획까지만 되고, 승인해도 이전 시작에서 입력 검증이 실패합니다.
+# 새 다클라우드 입력(db_migration/run_input.py)이 workflows 에 연결되면 이 목록을 넓힙니다.
+EXECUTABLE_SOURCE_CLOUDS = ("aws",)
+
+
+def source_executable_check(src: SourceInfo) -> PlanCheck:
+    title = "이전 실행 입력"
+    if src.cloud not in EXECUTABLE_SOURCE_CLOUDS:
+        return PlanCheck(
+            id="source_executable", title=title, result="fail",
+            detail=(f"원본이 {src.cloud} 입니다. 지금은 조사·계획까지만 지원하고, 이전 실행(VPN·CDC)은 AWS 원본의 "
+                    "VPC 대역·라우트 테이블을 요구해서 승인해도 시작 단계의 입력 검증에서 실패합니다."),
+        )
+    # workflows 가 넘기기 전에 CDC 내부 테이블(alpha_cdc.*)을 빼므로 그걸 뺀 목록이 비면 안 된다
+    tables = [t for t in src.tables if not t.startswith("alpha_cdc.")]
+    missing = [
+        label for label, ok in (
+            ("계정 ID", src.account_id), ("리전", src.region), ("DB 주소", src.db.host),
+            ("DB 포트", src.db.port is not None), ("DB 이름", src.db.database), ("이전할 테이블", tables),
+            ("VPC ID", src.network.vpc_id), ("VPC 대역", src.network.cidr), ("라우트 테이블", src.network.route_table_ids),
+            ("앱 DB 사용자", src.app.db_user), ("AWS 자격 증명 참조", src.credentials_ref.cloud),
+            ("DB 관리자 참조", src.credentials_ref.db_admin),
+        ) if not ok
+    ]
+    if missing:
+        return PlanCheck(
+            id="source_executable", title=title, result="unknown",
+            detail="이전 실행에 필요한 원본 정보를 못 받았습니다: " + ", ".join(missing),
+        )
+    return PlanCheck(id="source_executable", title=title, result="pass",
+                     detail="이전 실행(db_migration)이 요구하는 원본 정보가 모두 있음")
 
 
 def _platform_check(app: AppInfo, cloud: str) -> list[PlanCheck]:
@@ -248,7 +287,8 @@ def _db_tier(gib: float | None) -> str | None:
 def gcp_name(name: str) -> str:
     """GCP 자원 이름 규칙(소문자·숫자·하이픈, 문자로 시작, 49자 이하)에 맞춥니다. ECS 이름은 대문자·_ 를 허용함."""
     cleaned = re.sub(r"[^a-z0-9-]+", "-", name.lower()).strip("-")
-    if not cleaned or not cleaned[0].isalpha():
+    # 두 글자 미만이면 파생 이름이 GCP 한도에 못 미칩니다 (서비스 계정 ID "<이름>-run" 은 6자 이상이어야 함)
+    if len(cleaned) < 2 or not cleaned[0].isalpha():
         cleaned = "app-" + cleaned
     return cleaned[:49].rstrip("-")
 
@@ -271,8 +311,31 @@ def image_repo_name(uri: str | None) -> str | None:
     return name or None
 
 
+# 목적지 Terraform 이 직접 만드는 비밀의 이름 꼬리 (infra/terraform/gcp/modules/secrets). 원본 비밀 이름이 이와 겹치면 안 된다
+RESERVED_SECRET_SUFFIXES = ("db-password", "worker-secret")
+
+
 def _secret_name(service_name: str, env_name: str) -> str:
-    return f"{service_name}-{env_name.lower().replace('_', '-')}"
+    slug = re.sub(r"[^a-z0-9-]+", "-", env_name.lower().replace("_", "-")).strip("-") or "secret"
+    return f"{service_name}-{slug}"
+
+
+def secret_names(service_name: str, env_names) -> dict[str, str]:
+    """환경 변수 이름 → 목적지 비밀 이름. 서로 다른 원본 비밀이 같은 이름으로 합쳐지거나 Terraform 이 만드는 비밀과 겹치면
+    그 이름 뒤에 원본 환경 변수 이름의 짧은 해시를 붙여 구분합니다 (같은 입력이면 항상 같은 결과).
+    해시를 붙인 이름도 이미 쓰였으면 -2, -3 … 을 더 붙여 빈 이름이 나올 때까지 고릅니다."""
+    used = {f"{service_name}-{suffix}" for suffix in RESERVED_SECRET_SUFFIXES}
+    names: dict[str, str] = {}
+    for env in sorted(env_names):
+        name = _secret_name(service_name, env)
+        if name in used:
+            hashed = f"{name}-{hashlib.sha1(env.encode('utf-8')).hexdigest()[:6]}"
+            name, n = hashed, 2
+            while name in used:
+                name, n = f"{hashed}-{n}", n + 1
+        used.add(name)
+        names[env] = name
+    return names
 
 
 def build_target_infra(inv: InventoryForPlanning, target: TargetSelection) -> tuple[TargetInfra, list[Risk]]:
@@ -327,8 +390,7 @@ def build_target_infra(inv: InventoryForPlanning, target: TargetSelection) -> tu
         memory=fallback(_cloud_run_memory(app.memory_mib), DEFAULT_MEMORY, "메모리(MiB)"),
         health_check_path=fallback(app.health_check_path, DEFAULT_HEALTH_PATH, "상태 확인 경로"),
         env_vars=plain_env,
-        secret_refs={k: _secret_name(service_name, k)
-                     for k in app.secret_refs if k not in PROVISIONING_INJECTED_ENV},
+        secret_refs=secret_names(service_name, [k for k in app.secret_refs if k not in PROVISIONING_INJECTED_ENV]),
         db_version=str(TARGET_PG_MAJOR),
         db_name=db.database_name,
         db_user=db.username,
